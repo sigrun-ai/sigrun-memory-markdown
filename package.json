@@ -1,7 +1,7 @@
 {
-  "name": "sigrun-ext-memory",
+  "name": "sigrun-ext-memory-markdown",
   "version": "0.1.0",
-  "description": "Degenerate MemoryBackend extension for sigrun (pi-durable)",
+  "description": "Degenerate (markdown/observe-recall) MemoryBackend extension for sigrun (pi-durable)",
   "type": "module",
   "engines": {
     "node": ">=22.19.0"
