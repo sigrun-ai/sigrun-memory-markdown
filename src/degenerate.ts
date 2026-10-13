@@ -213,7 +213,7 @@ function recallTool(backend: DegenerateMemoryBackend) {
 		async execute(args, _api, _context) {
 			if (!backend.hasRecallSource()) {
 				return {
-					content: [
+					output: [
 						{ type: "text", text: "No conversation bound to memory recall yet." },
 					],
 					isError: true,
@@ -222,13 +222,13 @@ function recallTool(backend: DegenerateMemoryBackend) {
 			const hits = await backend.recall(args.query);
 			if (hits.length === 0) {
 				return {
-					content: [{ type: "text", text: "No matches found." }],
+					output: [{ type: "text", text: "No matches found." }],
 				};
 			}
 			const body = hits
 				.map((hit) => `[${hit.role}] ${hit.text} (entry ${hit.entryId})`)
 				.join("\n");
-			return { content: [{ type: "text", text: body }] };
+			return { output: [{ type: "text", text: body }] };
 		},
 	});
 }
