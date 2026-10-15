@@ -13,7 +13,7 @@ export type MemoryRole = "user" | "assistant";
 export type ObserveRecord = {
     /** Conversation the turn belongs to. */
     conversationId: number;
-    /** The generation (task) id both halves of the turn share. */
+    /** The settled answer's EntryId surrogate both halves of the turn share — the runSettled event exposes no generation task id, and the answer entry is the run's one stable transcript anchor. */
     generationId: number;
     role: MemoryRole;
     /** Plain text of the user input or the assistant answer. */
