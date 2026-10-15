@@ -1,16 +1,18 @@
 /**
- * Task 5: degenerate MemoryBackend (observe / recall / section).
+ * Task 7 (memory-seam port): the degenerate MemoryBackend captures through
+ * the host's `runSettled` delivery — the factory result carries NO `submit`
+ * pass-through, no pending-inputs map, no afterResponse hook. The wiring
+ * observes the run's user inputs from the host-resolved `inputTexts` and
+ * the assistant answer from an answered outcome; an unanswered run observes
+ * nothing. The same delivery attaches the settled conversation's transcript
+ * as the recall source — recall keeps reading the durable transcript
+ * (`entries()`, NOT the observe buffer), reaching history the live window
+ * compacted away. The section is a stable placeholder until spec B.
  *
- * The memory extension observes every completed generation — one record for
- * the user input and one for the assistant answer — through the generation
- * `afterResponse` hook, and recalls by scanning `conversation.entries()` (the
- * durable transcript), NOT the observe buffer: recall must work for history
- * the live window has compacted away. The section is a stable placeholder
- * until spec B replaces the backend.
- *
- * All generation runs against a faux provider (no network, no credentials),
- * proving the extension works against upstream pi-durable alone, with zero
- * sigrun-core dependency: this file opens a raw pi-durable Harness directly.
+ * Harness-backed tests run against a faux provider (no network, no
+ * credentials), proving the extension works against upstream pi-durable
+ * alone, with zero sigrun-core dependency: this file opens a raw pi-durable
+ * Harness directly and simulates the host's runSettled delivery itself.
  */
 
 import { mkdtemp, rm } from "node:fs/promises";
@@ -27,6 +29,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import {
 	createRegistry,
 	Harness,
+	type EntryId,
 	type HarnessSettings,
 	type ModelRef,
 	type Registry,
@@ -36,11 +39,12 @@ import {
 	createMemory,
 	DegenerateMemoryBackend,
 	MEMORY_PLACEHOLDER,
+	type MemoryEventApi,
 	type MemoryWiring,
+	type RunSettledEvent,
 } from "../src/degenerate.js";
 
 type CompactionSettings = NonNullable<HarnessSettings["compaction"]>;
-type RetrySettings = NonNullable<HarnessSettings["retry"]>;
 
 /** A live pi-durable Harness plus the registry and default model it uses. */
 interface OpenedMemoryHarness {
@@ -52,19 +56,12 @@ interface OpenedMemoryHarness {
 /**
  * Open a hermetic raw pi-durable Harness whose root conversation answers
  * through a faux provider, with the memory extension installed before
- * `Harness.open` (hooks resolve against the live registry snapshot).
- * `compaction` forces pi-durable's threshold-compaction thresholds (the
- * compacted-recall test); `retry` lowers retry delays (the retry-path test);
- * the defaults leave pi-durable's policies untouched.
- *
- * The Models store is built the way upstream documents it (pi-ai's faux
- * provider doc): a fresh `createModels()` with the faux provider installed —
- * no provider merging, no env, no config.
+ * `Harness.open`. `compaction` forces pi-durable's threshold-compaction
+ * thresholds (the compacted-recall test); omitted leaves the default policy.
  */
 async function openMemoryHarness(
 	dir: string,
 	compaction?: CompactionSettings,
-	retry?: RetrySettings,
 ): Promise<{ opened: OpenedMemoryHarness; memory: MemoryWiring; faux: ReturnType<typeof fauxProvider> }> {
 	const faux = fauxProvider({
 		provider: "faux",
@@ -79,16 +76,12 @@ async function openMemoryHarness(
 	const registry = createRegistry();
 	registry.install(memory.extension);
 
-	const settings: HarnessSettings = {
-		...(compaction === undefined ? {} : { compaction }),
-		...(retry === undefined ? {} : { retry }),
-	};
 	const harness = await Harness.open(
 		await openNodeSqliteStorage(join(dir, "sigrun.db")),
 		{
 			models,
 			registry,
-			...(Object.keys(settings).length === 0 ? {} : { settings }),
+			...(compaction === undefined ? {} : { settings: { compaction } }),
 		},
 		BACKGROUND_CONTEXT,
 	);
@@ -96,18 +89,16 @@ async function openMemoryHarness(
 	return { opened: { harness, registry, defaultModel }, memory, faux };
 }
 
-/** Submit one user input through the memory wiring and wait for `done`. */
+/** Submit one user input directly (no wiring submit — the seam retired it) and wait for settlement. */
 async function ask(
 	opened: OpenedMemoryHarness,
-	memory: MemoryWiring,
 	text: string,
 	context: Context,
 ) {
 	const root = await opened.harness.root(context, {
 		agent: { model: opened.defaultModel },
 	});
-	const submission = await memory.submit(
-		root,
+	const submission = await root.submit(
 		{ type: "input", content: text },
 		context,
 	);
@@ -115,24 +106,136 @@ async function ask(
 	return { root, submission };
 }
 
-test("one turn observes both roles and registers the extension surfaces", async () => {
+/** The empty event api (unit tests that never read the transcript). */
+const EMPTY_API: MemoryEventApi = {
+	entry: async () => undefined,
+	entries: async () => ({ items: [] }),
+	document: async () => undefined,
+};
+
+/** The event api rooted at one conversation's transcript scan. */
+function apiFor(root: { entries: MemoryEventApi["entries"] }): MemoryEventApi {
+	return {
+		entry: async () => undefined,
+		entries: (query, limit, cursor, context) =>
+			root.entries(query, limit, cursor, context),
+		document: async () => undefined,
+	};
+}
+
+/** A fabricated settled-run event (the host's delivery shape). */
+function fakeEvent(options: {
+	inputTexts: readonly string[];
+	status: "answered" | "unanswered";
+	answer?: string;
+	reason?: string;
+}): RunSettledEvent {
+	const base = {
+		conversationId: 1,
+		inputs: options.inputTexts.map(
+			(_, index) => (index + 1) as RunSettledEvent["inputs"][number],
+		),
+		inputTexts: options.inputTexts,
+	};
+	if (options.status === "answered") {
+		return {
+			...base,
+			outcome: {
+				status: "answered",
+				answerEntryId: 42 as EntryId,
+				answer: fauxAssistantMessage(options.answer ?? "faux answer one"),
+			},
+		};
+	}
+	return {
+		...base,
+		outcome: { status: "unanswered", reason: options.reason ?? "model_error" },
+	};
+}
+
+test("createMemory() wiring carries NO submit; capture rides runSettled", async () => {
+	const wiring = createMemory();
+	// The seam retired the submit pass-through — the field is gone.
+	expect((wiring as { submit?: unknown }).submit).toBeUndefined();
+	// Simulate the host delivering a settled run:
+	await wiring.runSettled(
+		fakeEvent({ inputTexts: ["hello"], status: "answered", answer: "hi there" }),
+		EMPTY_API,
+		BACKGROUND_CONTEXT,
+	);
+	// The observe ring carries user "hello" + the answer.
+	expect(wiring.backend.records().map((record) => record.role)).toEqual([
+		"user",
+		"assistant",
+	]);
+	expect(wiring.backend.records()[0]?.text).toBe("hello");
+	expect(wiring.backend.records()[1]?.text).toBe("hi there");
+});
+
+test("an unanswered run observes nothing (no orphan user record)", async () => {
+	const wiring = createMemory();
+	await wiring.runSettled(
+		fakeEvent({ inputTexts: ["doomed input"], status: "unanswered" }),
+		EMPTY_API,
+		BACKGROUND_CONTEXT,
+	);
+	// The pre-seam hook fired only on answer rounds; the seam keeps that
+	// contract — a model-failed run leaves no half-observed turn.
+	expect(wiring.backend.records()).toHaveLength(0);
+	// The delivery still attached the recall source (recall works after a
+	// failed turn too — the transcript exists regardless).
+	expect(wiring.backend.hasRecallSource()).toBe(true);
+});
+
+test("unresolvable inputs (\"\" at their position) record nothing", async () => {
+	const wiring = createMemory();
+	await wiring.runSettled(
+		fakeEvent({
+			inputTexts: ["first", ""],
+			status: "answered",
+			answer: "answered both",
+		}),
+		EMPTY_API,
+		BACKGROUND_CONTEXT,
+	);
+	// One user record (the resolvable input) + the shared answer.
+	expect(wiring.backend.records().map((record) => record.role)).toEqual([
+		"user",
+		"assistant",
+	]);
+	expect(wiring.backend.records()[0]?.text).toBe("first");
+});
+
+test("recall works without any submit binding (reads the durable transcript)", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-memory-"));
 	try {
 		const { opened, memory } = await openMemoryHarness(dir);
 		try {
-			await ask(opened, memory, "hello from the user", BACKGROUND_CONTEXT);
+			const { root } = await ask(opened, "hello from the user", BACKGROUND_CONTEXT);
 
-			// Two records: the user input then the assistant answer, keyed to the
-			// same conversation and generation (the generation task id).
+			// The host's delivery: no wiring submit ever ran — the recall source
+			// arrives with the event, through the event's entries surface.
+			await memory.runSettled(
+				fakeEvent({
+					inputTexts: ["hello from the user"],
+					status: "answered",
+				}),
+				apiFor(root),
+				BACKGROUND_CONTEXT,
+			);
+
 			const records = memory.backend.records();
-			expect(records).toHaveLength(2);
-			const [user, assistant] = records;
-			expect(user?.role).toBe("user");
-			expect(user?.text).toBe("hello from the user");
-			expect(assistant?.role).toBe("assistant");
-			expect(assistant?.text).toContain("faux answer one");
-			expect(user?.conversationId).toBe(assistant?.conversationId);
-			expect(user?.generationId).toBe(assistant?.generationId);
+			expect(records.map((record) => record.role)).toEqual([
+				"user",
+				"assistant",
+			]);
+
+			// Recall reads the durable transcript and finds the turn — with real
+			// entry ids, proof the scan is transcript-backed, not ring-backed.
+			const hits = await memory.backend.recall("hello from the user");
+			expect(hits.length).toBeGreaterThanOrEqual(1);
+			expect(hits[0]?.role).toBe("user");
+			expect(hits[0]?.text).toContain("hello from the user");
 
 			// The extension registered the recall tool and the placeholder section.
 			const snapshot = opened.registry.snapshot();
@@ -167,7 +270,7 @@ test("recall reaches an entry the live window compacted away", async () => {
 		try {
 			const secret = "the secret passphrase is sigrun-memorable";
 			const longUser1 = `${secret}. ${"filler ".repeat(180)}`;
-			const { root } = await ask(opened, memory, longUser1, BACKGROUND_CONTEXT);
+			const { root } = await ask(opened, longUser1, BACKGROUND_CONTEXT);
 
 			// Turn two: the compaction summary consumes one faux response, the
 			// generation's answer the next.
@@ -175,8 +278,7 @@ test("recall reaches an entry the live window compacted away", async () => {
 				fauxAssistantMessage("compacted history summary"),
 				fauxAssistantMessage("faux answer two"),
 			]);
-			const second = await memory.submit(
-				root,
+			const second = await root.submit(
 				{ type: "input", content: `second question ${"context ".repeat(160)}` },
 				BACKGROUND_CONTEXT,
 			);
@@ -201,11 +303,11 @@ test("recall reaches an entry the live window compacted away", async () => {
 
 			// Recall reads the durable transcript and still finds the compacted-out
 			// entry — the App C `entries()`-reachability verification. A *fresh*
-			// backend (bound to the same conversation, nothing observed yet) makes
-			// the read independent of the in-process observe buffer: only
-			// `conversation.entries()` can hold the history.
+			// backend (attached to the same conversation, nothing observed yet)
+			// makes the read independent of the in-process observe buffer: only
+			// the transcript scan can hold the history.
 			const fresh = new DegenerateMemoryBackend();
-			fresh.bindRecallSource(root);
+			fresh.attachRecallSource({ id: root.id, entries: apiFor(root).entries });
 			const hits = await fresh.recall("sigrun-memorable");
 			expect(hits.length).toBeGreaterThanOrEqual(1);
 			expect(hits.some((hit) => hit.text.includes("sigrun-memorable"))).toBe(
@@ -244,92 +346,6 @@ test("section() returns the stable placeholder and the section renders it", asyn
 					BACKGROUND_CONTEXT,
 				),
 			).toBe(MEMORY_PLACEHOLDER);
-		} finally {
-			await opened.harness.close(BACKGROUND_CONTEXT);
-		}
-	} finally {
-		await rm(dir, { recursive: true, force: true });
-	}
-});
-
-// Review Finding 1: observe only the ANSWER round, not error/retry rounds.
-test("a retryable error round observes nothing; the retried turn records the final answer once", async () => {
-	const dir = await mkdtemp(join(tmpdir(), "sigrun-memory-"));
-	try {
-		const { opened, memory, faux } = await openMemoryHarness(dir, undefined, {
-			enabled: true,
-			maxRetries: 3,
-			baseDelayMs: 1,
-			maxAgentDelayMs: 5,
-		});
-		try {
-			// First attempt: a retryable provider error; second: the real answer.
-			faux.setResponses([
-				fauxAssistantMessage("", {
-					stopReason: "error",
-					errorMessage: "provider 500 temporarily overloaded",
-				}),
-				fauxAssistantMessage("recovered answer"),
-			]);
-			const { submission } = await ask(
-				opened,
-				memory,
-				"retry me",
-				BACKGROUND_CONTEXT,
-			);
-			const settled = await submission.wait(BACKGROUND_CONTEXT);
-			expect(settled.status).toBe("done");
-
-			// Exactly two records: one user, one final answer. The error round
-			// observed nothing (no error-text assistant record, and the final
-			// answer is not dropped by a first-fire memo).
-			const records = memory.backend.records();
-			expect(records).toHaveLength(2);
-			expect(records[0]?.role).toBe("user");
-			expect(records[0]?.text).toBe("retry me");
-			expect(records[1]?.role).toBe("assistant");
-			expect(records[1]?.text).toBe("recovered answer");
-		} finally {
-			await opened.harness.close(BACKGROUND_CONTEXT);
-		}
-	} finally {
-		await rm(dir, { recursive: true, force: true });
-	}
-});
-
-test("a model-failed run leaves no orphan user record", async () => {
-	const dir = await mkdtemp(join(tmpdir(), "sigrun-memory-"));
-	try {
-		const { opened, memory, faux } = await openMemoryHarness(dir, undefined, {
-			enabled: true,
-			maxRetries: 1,
-			baseDelayMs: 1,
-			maxAgentDelayMs: 5,
-		});
-		try {
-			// Every attempt fails; the run settles unanswered (model_error).
-			faux.setResponses([
-				fauxAssistantMessage("", {
-					stopReason: "error",
-					errorMessage: "provider 500 temporarily overloaded",
-				}),
-				fauxAssistantMessage("", {
-					stopReason: "error",
-					errorMessage: "provider 500 temporarily overloaded",
-				}),
-			]);
-			const { submission } = await ask(
-				opened,
-				memory,
-				"doomed input",
-				BACKGROUND_CONTEXT,
-			);
-			const settled = await submission.wait(BACKGROUND_CONTEXT);
-			expect(settled.status).not.toBe("done");
-
-			// No answer round fired, so nothing is observed — most importantly no
-			// orphaned half of the turn the run never answered.
-			expect(memory.backend.records()).toHaveLength(0);
 		} finally {
 			await opened.harness.close(BACKGROUND_CONTEXT);
 		}

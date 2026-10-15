@@ -10,7 +10,11 @@ export {
 	DegenerateMemoryBackend,
 	MEMORY_PLACEHOLDER,
 } from "./degenerate.js";
-export type { MemoryWiring } from "./degenerate.js";
+export type {
+	MemoryEventApi,
+	MemoryWiring,
+	RunSettledEvent,
+} from "./degenerate.js";
 export type {
 	MemoryBackend,
 	MemoryRole,
