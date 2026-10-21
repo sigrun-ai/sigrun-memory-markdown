@@ -13,7 +13,7 @@ extension loader. Small, single-purpose, no cross-extension coupling.
 ## Layout
 
 - `src/index.ts` — public surface (re-exports the factory).
-- `src/degenerate.ts backend.ts` — the implementation.
+- `src/backend.ts` + `src/degenerate.ts` — the implementation.
 - `test/` — vitest suites.
 - `dist/` — **committed build output** (git-source installs load
   `dist/index.js` with no build step). Rebuild with `npm run build` and
