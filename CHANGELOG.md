@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0] - 2026-10-13
 ### Added
-- Renamed to `@sigrun/ext-memory-markdown` for the 0.1.0 release (repo
-  stays `sigrun-ai/sigrun-ext-memory-markdown`): the factory is now the
+- Renamed to `@sigrun/memory-markdown` for the 0.1.0 release (repo
+  stays `sigrun-ai/sigrun-memory-markdown`): the factory is now the
   package's DEFAULT export (the sigrun extension contract's supported
   form; the named `createMemory` export remains), published package
   metadata (`publishConfig` access/provenance), host modules moved to

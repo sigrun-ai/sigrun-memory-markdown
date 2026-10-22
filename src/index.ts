@@ -1,5 +1,5 @@
 /**
- * @sigrun/ext-memory-markdown: the degenerate MemoryBackend extension
+ * @sigrun/memory-markdown: the degenerate MemoryBackend extension
  * for sigrun.
  *
  * The public surface of the package. The DEFAULT export (the

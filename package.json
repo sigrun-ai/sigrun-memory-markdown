@@ -1,5 +1,5 @@
 {
-	"name": "@sigrun/ext-memory-markdown",
+	"name": "@sigrun/memory-markdown",
 	"version": "0.1.0",
 	"description": "Degenerate (markdown/observe-recall) MemoryBackend extension for sigrun (pi-durable)",
 	"type": "module",
@@ -19,7 +19,7 @@
 		"CHANGELOG.md"
 	],
 	"scripts": {
-		"test": "node scripts/check-manifest.mjs --expect-name @sigrun/ext-memory-markdown && vitest run",
+		"test": "node scripts/check-manifest.mjs --expect-name @sigrun/memory-markdown && vitest run",
 		"typecheck": "tsc --noEmit",
 		"build": "tsc -p tsconfig.build.json",
 		"prepare": "npm run build"
@@ -41,12 +41,12 @@
 	"license": "MIT",
 	"repository": {
 		"type": "github",
-		"url": "git+https://github.com/sigrun-ai/sigrun-ext-memory-markdown.git"
+		"url": "git+https://github.com/sigrun-ai/sigrun-memory-markdown.git"
 	},
 	"bugs": {
-		"url": "https://github.com/sigrun-ai/sigrun-ext-memory-markdown/issues"
+		"url": "https://github.com/sigrun-ai/sigrun-memory-markdown/issues"
 	},
-	"homepage": "https://github.com/sigrun-ai/sigrun-ext-memory-markdown#readme",
+	"homepage": "https://github.com/sigrun-ai/sigrun-memory-markdown#readme",
 	"publishConfig": {
 		"access": "public",
 		"provenance": true

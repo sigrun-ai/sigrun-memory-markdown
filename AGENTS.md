@@ -1,4 +1,4 @@
-# AGENTS.md — sigrun-ext-memory-markdown
+# AGENTS.md — sigrun-memory-markdown
 
 Guidance for coding agents working in this repository.
 
