@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- `memory_recall` now searches only the calling conversation. It previously
+  read whichever conversation settled a run most recently, regardless of
+  owner, so one user's agent could read another user's transcript through a
+  tool that described itself as searching "this conversation". A
+  conversation that has never settled answers "No matches found" instead of
+  reaching another conversation's history.
+
 ## [0.1.0] - 2026-10-13
 ### Added
 - Renamed to `@sigrun/memory-markdown` for the 0.1.0 release (repo

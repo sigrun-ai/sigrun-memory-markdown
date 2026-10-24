@@ -4,10 +4,16 @@
  *
  * - `observe` appends to an in-process ring buffer — the schema is what
  *   spec B's honcho mapping consumes; the buffer itself is intentionally
- *   volatile (a degenerate backend is not durable memory).
+ *   volatile (a degenerate backend is not durable memory). Rings are
+ *   keyed by the run's owner (`""` when ownerless), so one user's turns
+ *   never sit in another user's ring.
  * - `recall` scans the durable transcript (`entries()`, newest-first,
  *   paginated) — NOT the observe buffer — so it reaches entries the live
- *   context window compacted away (App C verification).
+ *   context window compacted away (App C verification). Recall reads the
+ *   CALLING conversation's transcript only: pi-durable 1.3.0's
+ *   `ConversationHandle` has no `entries`, and `ToolExecutionApi` no
+ *   history reader, so each `runSettled` records that conversation's
+ *   transcript reader and the tool looks up its own conversation id.
  * - `section` returns the stable placeholder; spec B replaces the string.
  *
  * Capture (memory-seam port): the host delivers one `runSettled` event per
@@ -16,9 +22,9 @@
  * unanswered reason). The extension observes the user halves from
  * `inputTexts` and the assistant half from an answered outcome; an
  * unanswered run observes NOTHING (no orphan user record — the behavior
- * the pre-seam afterResponse hook pinned). The same delivery binds the
- * event's entries surface as the recall source, so no submit-boundary
- * pass-through exists anymore.
+ * the pre-seam afterResponse hook pinned). The same delivery records the
+ * event's entries surface as that conversation's recall source, so no
+ * submit-boundary pass-through exists anymore.
  */
 import type { Context } from "@earendil-works/chord";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -34,10 +40,12 @@ export declare const DEFAULT_RING_CAPACITY = 1000;
  * (src/harness/event-bus.ts; this package has no core dependency, so the
  * shapes are restated here and the loader validates the handler by name).
  * `inputTexts` is position-paired with `inputs`; an input whose entry is
- * unresolvable contributes `""` at its position.
+ * unresolvable contributes `""` at its position. `owner` is the run's
+ * owning user (absent when the conversation is ownerless).
  */
 export interface RunSettledEvent {
     readonly conversationId: number;
+    readonly owner?: string;
     readonly inputs: readonly SubmissionId[];
     readonly inputTexts: readonly string[];
     readonly outcome: {
@@ -65,26 +73,31 @@ type RecallSource = {
     entries: MemoryEventApi["entries"];
 };
 /**
- * The degenerate backend: in-process observe ring + transcript recall.
- * The wiring attaches the recall source when the first `runSettled` event
- * arrives; before that, recall reports the unbound state, never guesses.
+ * The degenerate backend: in-process observe rings + transcript recall.
+ * Each `runSettled` delivery records its conversation's transcript reader,
+ * so recall answers from the calling conversation and nothing else; a
+ * conversation that never settled has no source and reports no matches —
+ * never another conversation's history.
  */
 export declare class DegenerateMemoryBackend implements MemoryBackend {
     #private;
     readonly capacity: number;
     constructor(capacity?: number);
+    /** Key a run by its owner: `""` is the ownerless (single-user) ring. */
+    static ringKey(owner: string | undefined): string;
     observe(record: ObserveRecord): void;
-    recall(query: string): Promise<RecallResult[]>;
+    recall(query: string, conversationId: number): Promise<RecallResult[]>;
     section(): string;
     /**
-     * Wiring-internal: the `runSettled` delivery attaches the settled
-     * conversation's transcript as the recall source. Hosts never call this.
+     * Wiring-internal: record one conversation's transcript reader as its
+     * recall source. Hosts never call this — `runSettled` does.
      */
-    attachRecallSource(source: RecallSource): void;
-    /** Whether a recall source is attached (the tool's no-early-answers guard). */
-    hasRecallSource(): boolean;
-    /** The observed records, oldest first. Test/diagnostic surface. */
-    records(): readonly ObserveRecord[];
+    bindRecallSource(source: RecallSource): void;
+    /**
+     * The observed records for one owner (`""` = ownerless), oldest first.
+     * Test/diagnostic surface; it never reads another owner's ring.
+     */
+    records(owner?: string): readonly ObserveRecord[];
 }
 /** Scan one conversation's newest-first history for query matches. */
 export declare function recallFromEntries(source: RecallSource, query: string, context: Context): Promise<RecallResult[]>;
@@ -97,8 +110,9 @@ export interface MemoryWiring {
     /**
      * The host's settled-run delivery (sigrun memory seam): observes the
      * run's user inputs (host-resolved `inputTexts`) and, when the run
-     * answered, the assistant answer; attaches the settled conversation as
-     * the recall source. An unanswered run observes nothing.
+     * answered, the assistant answer; records the settled conversation's
+     * transcript as that conversation's recall source. An unanswered run
+     * observes nothing.
      */
     runSettled(event: RunSettledEvent, api: MemoryEventApi, context: Context): void | Promise<void>;
 }

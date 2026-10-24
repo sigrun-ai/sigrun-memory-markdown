@@ -13,6 +13,12 @@ export type MemoryRole = "user" | "assistant";
 export type ObserveRecord = {
     /** Conversation the turn belongs to. */
     conversationId: number;
+    /**
+     * The owning user the run settled for; absent when the conversation is
+     * ownerless. Rings are keyed by this, so no record ever reaches a ring
+     * another user reads.
+     */
+    owner?: string;
     /** The settled answer's EntryId surrogate both halves of the turn share — the runSettled event exposes no generation task id, and the answer entry is the run's one stable transcript anchor. */
     generationId: number;
     role: MemoryRole;
@@ -41,11 +47,13 @@ export interface MemoryBackend {
     /** Record one observed turn half. Duplicates must be idempotent. */
     observe(record: ObserveRecord): void;
     /**
-     * Search long-term history for `query`. The degenerate backend scans the
-     * durable transcript (`conversation.entries()`), not the observe buffer:
-     * recall must work for history the live window compacted away (App C).
+     * Search `conversationId`'s long-term history for `query`. The degenerate
+     * backend scans the durable transcript (`conversation.entries()`), not the
+     * observe buffer: recall must work for history the live window compacted
+     * away (App C). A conversation with no recorded source answers empty rather
+     * than reaching any other conversation.
      */
-    recall(query: string): Promise<RecallResult[]>;
+    recall(query: string, conversationId: number): Promise<RecallResult[]>;
     /** The rendered `long-term-memory` prompt section; stable per backend. */
     section(): string;
 }
