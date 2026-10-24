@@ -16,6 +16,15 @@
  *   transcript reader and the tool looks up its own conversation id.
  * - `section` returns the stable placeholder; spec B replaces the string.
  *
+ * The recorded readers are held in PROCESS memory, not in the durable
+ * store: after a restart a conversation has no reader again until its
+ * next run settles, so a recall that lands before that answers "No
+ * matches found." even though the transcript is intact and readable. The
+ * alternative — resolving the reader per call — needs a history reader on
+ * `ToolExecutionApi`, which pi-durable 1.3.0 does not expose, so the
+ * per-conversation map is the only shape that answers from the calling
+ * conversation instead of the latest one.
+ *
  * Capture (memory-seam port): the host delivers one `runSettled` event per
  * settled run — the run's input texts already host-resolved from the
  * durable transcript, plus the run's outcome (the final answer, or the
@@ -26,7 +35,6 @@
  * event's entries surface as that conversation's recall source, so no
  * submit-boundary pass-through exists anymore.
  */
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Type } from "@earendil-works/pi-ai";
 import { AssistantEntry, defineExtension, defineTool, section, UserEntry, } from "@earendil-works/pi-durable";
 /** The stable `long-term-memory` section until a real backend is wired (spec B). */
@@ -59,41 +67,41 @@ export class DegenerateMemoryBackend {
     }
     observe(record) {
         const key = DegenerateMemoryBackend.ringKey(record.owner);
-        const ring = this.#rings.get(key);
+        let ring = this.#rings.get(key);
         if (ring === undefined) {
-            this.#rings.set(key, [record]);
-            return;
+            ring = [];
+            this.#rings.set(key, ring);
         }
         ring.push(record);
         if (ring.length > this.capacity) {
             ring.splice(0, ring.length - this.capacity);
         }
     }
-    async recall(query, conversationId) {
+    async recall(query, conversationId, context) {
         const source = this.#sources.get(conversationId);
         if (source === undefined)
             return [];
-        // BACKGROUND_CONTEXT: recall is a host-initiated read with no incoming
-        // request context (the tool passes none); the degenerate scan carries
-        // no caller deadline to honour.
-        return recallFromEntries(source, query, BACKGROUND_CONTEXT);
+        return recallFromEntries(source, query, context);
     }
     section() {
         return MEMORY_PLACEHOLDER;
     }
     /**
-     * Wiring-internal: record one conversation's transcript reader as its
-     * recall source. Hosts never call this — `runSettled` does.
+     * The recorded entries reader for one conversation. The binding keeps the
+     * reader the host handed to that conversation's `runSettled`, so it must
+     * stay valid after the delivery returns — core's does (it re-reads through
+     * the harness per call, never an invocation-bound handle).
      */
     bindRecallSource(source) {
         this.#sources.set(source.id, source);
     }
     /**
      * The observed records for one owner (`""` = ownerless), oldest first.
-     * Test/diagnostic surface; it never reads another owner's ring.
+     * Test/diagnostic surface; it never reads another owner's ring, and the
+     * copy keeps a caller from mutating the ring it was handed.
      */
     records(owner) {
-        return this.#rings.get(DegenerateMemoryBackend.ringKey(owner)) ?? [];
+        return [...(this.#rings.get(DegenerateMemoryBackend.ringKey(owner)) ?? [])];
     }
 }
 /** Plain text of a user input (`string | (TextContent|ImageContent)[]`). */
@@ -175,8 +183,10 @@ function recallTool(backend) {
         parameters: Type.Object({
             query: Type.String({ description: "Text to search for." }),
         }),
-        async execute(args, api, _context) {
-            const hits = await backend.recall(args.query, api.conversationId);
+        async execute(args, api, context) {
+            // The caller's context reaches the scan so a recall cancelled with its
+            // run stops reading, rather than outliving the run that asked.
+            const hits = await backend.recall(args.query, api.conversationId, context);
             if (hits.length === 0) {
                 return {
                     output: [{ type: "text", text: "No matches found." }],

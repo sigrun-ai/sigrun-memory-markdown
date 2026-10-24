@@ -65,6 +65,17 @@ interface OpenedMemoryHarness {
 async function openMemoryHarness(
 	dir: string,
 	compaction?: CompactionSettings,
+): ReturnType<typeof openMemoryHarnessAt> {
+	return openMemoryHarnessAt(join(dir, "sigrun.db"), compaction);
+}
+
+/**
+ * `openMemoryHarness` against an explicit database file, so a test can close
+ * the harness and reopen the same store as a fresh process would.
+ */
+async function openMemoryHarnessAt(
+	dbPath: string,
+	compaction?: CompactionSettings,
 ): Promise<{ opened: OpenedMemoryHarness; memory: MemoryWiring; faux: ReturnType<typeof fauxProvider> }> {
 	const faux = fauxProvider({
 		provider: "faux",
@@ -80,7 +91,7 @@ async function openMemoryHarness(
 	registry.install(memory.extension);
 
 	const harness = await Harness.open(
-		await openNodeSqliteStorage(join(dir, "sigrun.db")),
+		await openNodeSqliteStorage(dbPath),
 		{
 			models,
 			registry,
@@ -229,7 +240,7 @@ test("an unanswered run observes nothing (no orphan user record)", async () => {
 	// source (recall works after a failed turn too — the transcript exists
 	// regardless), while observing nothing into it.
 	expect(wiring.backend.records()).toHaveLength(0);
-	const hits = await wiring.backend.recall("anything", 1);
+	const hits = await wiring.backend.recall("anything", 1, BACKGROUND_CONTEXT);
 	expect(hits).toEqual([]);
 });
 
@@ -278,7 +289,11 @@ test("recall works without any submit binding (reads the durable transcript)", a
 
 			// Recall reads the durable transcript and finds the turn — with real
 			// entry ids, proof the scan is transcript-backed, not ring-backed.
-			const hits = await memory.backend.recall("hello from the user", root.id);
+			const hits = await memory.backend.recall(
+				"hello from the user",
+				root.id,
+				BACKGROUND_CONTEXT,
+			);
 			expect(hits.length).toBeGreaterThanOrEqual(1);
 			expect(hits[0]?.role).toBe("user");
 			expect(hits[0]?.text).toContain("hello from the user");
@@ -366,7 +381,11 @@ test("recall reaches an entry the live window compacted away", async () => {
 			expect(
 				fresh.records().some((record) => record.text.includes("sigrun-memorable")),
 			).toBe(false);
-			const hits = await fresh.recall("sigrun-memorable", root.id);
+			const hits = await fresh.recall(
+				"sigrun-memorable",
+				root.id,
+				BACKGROUND_CONTEXT,
+			);
 			expect(hits.length).toBeGreaterThanOrEqual(1);
 			expect(hits.some((hit) => hit.text.includes("sigrun-memorable"))).toBe(
 				true,
@@ -575,4 +594,74 @@ test("observe records land in per-owner rings, not one shared ring", async () =>
 		"ownerless input",
 		"ownerless answer",
 	]);
+});
+
+test("recall answers nothing for a conversation that settled before a restart", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-memory-"));
+	const dbPath = join(dir, "sigrun.db");
+	let conversationId: ConversationId | undefined;
+	try {
+		const first = await openMemoryHarnessAt(dbPath);
+		try {
+			const conversation = await openConversation(first.opened);
+			conversationId = conversation.id;
+			first.faux.setResponses([fauxAssistantMessage("before restart")]);
+			const submission = await conversation.submit(
+				{ type: "input", content: "durable marker epsilon" },
+				BACKGROUND_CONTEXT,
+			);
+			await submission.wait(BACKGROUND_CONTEXT);
+			await first.memory.runSettled(
+				fakeEvent({
+					conversationId: conversation.id,
+					inputTexts: ["durable marker epsilon"],
+					status: "answered",
+					answer: "before restart",
+				}),
+				apiFor(conversation),
+				BACKGROUND_CONTEXT,
+			);
+			// A process sees its own settled conversation.
+			expect(await first.memory.backend.recall(
+				"durable marker epsilon",
+				conversation.id,
+				BACKGROUND_CONTEXT,
+			)).not.toHaveLength(0);
+		} finally {
+			await first.opened.harness.close(BACKGROUND_CONTEXT);
+		}
+
+		// Reopened: the transcript is durable and still readable, but the reader
+		// map lives in process memory, so recall fails CLOSED — empty, never
+		// another conversation's history — until this conversation settles again.
+		// Pinned here because the failure is indistinguishable from "no matches"
+		// and would otherwise read as a bug rather than the documented boundary.
+		const second = await openMemoryHarnessAt(dbPath);
+		try {
+			if (conversationId === undefined) throw new Error("no conversation id");
+			const reopened = await second.opened.harness.conversation(
+				conversationId,
+				BACKGROUND_CONTEXT,
+			);
+			if (reopened === undefined) throw new Error("conversation did not reopen");
+			const page = await reopened.entries(
+				{},
+				100,
+				undefined,
+				BACKGROUND_CONTEXT,
+			);
+			expect(JSON.stringify(page.items)).toContain("durable marker epsilon");
+			expect(
+				await second.memory.backend.recall(
+					"durable marker epsilon",
+					reopened.id,
+					BACKGROUND_CONTEXT,
+				),
+			).toEqual([]);
+		} finally {
+			await second.opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
 });

@@ -16,6 +16,15 @@
  *   transcript reader and the tool looks up its own conversation id.
  * - `section` returns the stable placeholder; spec B replaces the string.
  *
+ * The recorded readers are held in PROCESS memory, not in the durable
+ * store: after a restart a conversation has no reader again until its
+ * next run settles, so a recall that lands before that answers "No
+ * matches found." even though the transcript is intact and readable. The
+ * alternative — resolving the reader per call — needs a history reader on
+ * `ToolExecutionApi`, which pi-durable 1.3.0 does not expose, so the
+ * per-conversation map is the only shape that answers from the calling
+ * conversation instead of the latest one.
+ *
  * Capture (memory-seam port): the host delivers one `runSettled` event per
  * settled run — the run's input texts already host-resolved from the
  * durable transcript, plus the run's outcome (the final answer, or the
@@ -67,13 +76,16 @@ const RECALL_SCAN_LIMIT = 10_000;
 const RECALL_HIT_LIMIT = 20;
 
 /**
- * The settled-run event the host delivers to {@link MemoryWiring.runSettled}
- * — a structural mirror of sigrun core's `RunSettledEvent`
- * (src/harness/event-bus.ts; this package has no core dependency, so the
- * shapes are restated here and the loader validates the handler by name).
- * `inputTexts` is position-paired with `inputs`; an input whose entry is
- * unresolvable contributes `""` at its position. `owner` is the run's
- * owning user (absent when the conversation is ownerless).
+ * The settled-run event the host delivers to {@link MemoryWiring.runSettled}.
+ * It restates sigrun core's `RunSettledEvent` (src/harness/event-bus.ts) so
+ * this package carries no core dependency, and the loader validates the
+ * handler by name rather than by shape.
+ *
+ * `owner` is a SUPERSET of core's shape today: core stamps it with multi-user
+ * M2's "owner on events" change, and until that lands every delivery leaves it
+ * undefined, so records key the ownerless ring. `inputTexts` is
+ * position-paired with `inputs`; an input whose entry is unresolvable
+ * contributes `""` at its position.
  */
 export interface RunSettledEvent {
 	readonly conversationId: number;
@@ -135,10 +147,10 @@ export class DegenerateMemoryBackend implements MemoryBackend {
 
 	observe(record: ObserveRecord): void {
 		const key = DegenerateMemoryBackend.ringKey(record.owner);
-		const ring = this.#rings.get(key);
+		let ring = this.#rings.get(key);
 		if (ring === undefined) {
-			this.#rings.set(key, [record]);
-			return;
+			ring = [];
+			this.#rings.set(key, ring);
 		}
 		ring.push(record);
 		if (ring.length > this.capacity) {
@@ -146,13 +158,14 @@ export class DegenerateMemoryBackend implements MemoryBackend {
 		}
 	}
 
-	async recall(query: string, conversationId: number): Promise<RecallResult[]> {
+	async recall(
+		query: string,
+		conversationId: number,
+		context: Context,
+	): Promise<RecallResult[]> {
 		const source = this.#sources.get(conversationId);
 		if (source === undefined) return [];
-		// BACKGROUND_CONTEXT: recall is a host-initiated read with no incoming
-		// request context (the tool passes none); the degenerate scan carries
-		// no caller deadline to honour.
-		return recallFromEntries(source, query, BACKGROUND_CONTEXT);
+		return recallFromEntries(source, query, context);
 	}
 
 	section(): string {
@@ -160,8 +173,10 @@ export class DegenerateMemoryBackend implements MemoryBackend {
 	}
 
 	/**
-	 * Wiring-internal: record one conversation's transcript reader as its
-	 * recall source. Hosts never call this — `runSettled` does.
+	 * The recorded entries reader for one conversation. The binding keeps the
+	 * reader the host handed to that conversation's `runSettled`, so it must
+	 * stay valid after the delivery returns — core's does (it re-reads through
+	 * the harness per call, never an invocation-bound handle).
 	 */
 	bindRecallSource(source: RecallSource): void {
 		this.#sources.set(source.id, source);
@@ -169,10 +184,11 @@ export class DegenerateMemoryBackend implements MemoryBackend {
 
 	/**
 	 * The observed records for one owner (`""` = ownerless), oldest first.
-	 * Test/diagnostic surface; it never reads another owner's ring.
+	 * Test/diagnostic surface; it never reads another owner's ring, and the
+	 * copy keeps a caller from mutating the ring it was handed.
 	 */
 	records(owner?: string): readonly ObserveRecord[] {
-		return this.#rings.get(DegenerateMemoryBackend.ringKey(owner)) ?? [];
+		return [...(this.#rings.get(DegenerateMemoryBackend.ringKey(owner)) ?? [])];
 	}
 }
 
@@ -266,8 +282,14 @@ function recallTool(backend: DegenerateMemoryBackend) {
 		parameters: Type.Object({
 			query: Type.String({ description: "Text to search for." }),
 		}),
-		async execute(args, api, _context) {
-			const hits = await backend.recall(args.query, api.conversationId);
+		async execute(args, api, context) {
+			// The caller's context reaches the scan so a recall cancelled with its
+			// run stops reading, rather than outliving the run that asked.
+			const hits = await backend.recall(
+				args.query,
+				api.conversationId,
+				context,
+			);
 			if (hits.length === 0) {
 				return {
 					output: [{ type: "text", text: "No matches found." }],

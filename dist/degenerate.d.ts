@@ -16,6 +16,15 @@
  *   transcript reader and the tool looks up its own conversation id.
  * - `section` returns the stable placeholder; spec B replaces the string.
  *
+ * The recorded readers are held in PROCESS memory, not in the durable
+ * store: after a restart a conversation has no reader again until its
+ * next run settles, so a recall that lands before that answers "No
+ * matches found." even though the transcript is intact and readable. The
+ * alternative — resolving the reader per call — needs a history reader on
+ * `ToolExecutionApi`, which pi-durable 1.3.0 does not expose, so the
+ * per-conversation map is the only shape that answers from the calling
+ * conversation instead of the latest one.
+ *
  * Capture (memory-seam port): the host delivers one `runSettled` event per
  * settled run — the run's input texts already host-resolved from the
  * durable transcript, plus the run's outcome (the final answer, or the
@@ -35,13 +44,16 @@ export declare const MEMORY_PLACEHOLDER = "long-term memory backend not configur
 /** Ring buffer capacity; the oldest records drop once full. */
 export declare const DEFAULT_RING_CAPACITY = 1000;
 /**
- * The settled-run event the host delivers to {@link MemoryWiring.runSettled}
- * — a structural mirror of sigrun core's `RunSettledEvent`
- * (src/harness/event-bus.ts; this package has no core dependency, so the
- * shapes are restated here and the loader validates the handler by name).
- * `inputTexts` is position-paired with `inputs`; an input whose entry is
- * unresolvable contributes `""` at its position. `owner` is the run's
- * owning user (absent when the conversation is ownerless).
+ * The settled-run event the host delivers to {@link MemoryWiring.runSettled}.
+ * It restates sigrun core's `RunSettledEvent` (src/harness/event-bus.ts) so
+ * this package carries no core dependency, and the loader validates the
+ * handler by name rather than by shape.
+ *
+ * `owner` is a SUPERSET of core's shape today: core stamps it with multi-user
+ * M2's "owner on events" change, and until that lands every delivery leaves it
+ * undefined, so records key the ownerless ring. `inputTexts` is
+ * position-paired with `inputs`; an input whose entry is unresolvable
+ * contributes `""` at its position.
  */
 export interface RunSettledEvent {
     readonly conversationId: number;
@@ -86,16 +98,19 @@ export declare class DegenerateMemoryBackend implements MemoryBackend {
     /** Key a run by its owner: `""` is the ownerless (single-user) ring. */
     static ringKey(owner: string | undefined): string;
     observe(record: ObserveRecord): void;
-    recall(query: string, conversationId: number): Promise<RecallResult[]>;
+    recall(query: string, conversationId: number, context: Context): Promise<RecallResult[]>;
     section(): string;
     /**
-     * Wiring-internal: record one conversation's transcript reader as its
-     * recall source. Hosts never call this — `runSettled` does.
+     * The recorded entries reader for one conversation. The binding keeps the
+     * reader the host handed to that conversation's `runSettled`, so it must
+     * stay valid after the delivery returns — core's does (it re-reads through
+     * the harness per call, never an invocation-bound handle).
      */
     bindRecallSource(source: RecallSource): void;
     /**
      * The observed records for one owner (`""` = ownerless), oldest first.
-     * Test/diagnostic surface; it never reads another owner's ring.
+     * Test/diagnostic surface; it never reads another owner's ring, and the
+     * copy keeps a caller from mutating the ring it was handed.
      */
     records(owner?: string): readonly ObserveRecord[];
 }

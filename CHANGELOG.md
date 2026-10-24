@@ -15,6 +15,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   conversation that has never settled answers "No matches found" instead of
   reaching another conversation's history.
 
+### Changed
+- Breaking, for a backend implementing `MemoryBackend`: `recall` now takes
+  the conversation to search (`recall(query, conversationId, context)`) and
+  no longer reads one process-global source, and `ObserveRecord` gained an
+  optional `owner`.
+- A conversation's transcript reader is resolved from the runs that have
+  settled **in this process**, so a recall issued before it is as useless as
+  before a restart: it answers "No matches found" even though the transcript
+  is durable and readable. Resolving the reader per call would need a
+  history reader on `ToolExecutionApi`, which pi-durable 1.3.0 does not
+  expose; the per-conversation map is the only shape that answers from the
+  calling conversation rather than the latest one.
+
 ## [0.1.0] - 2026-10-13
 ### Added
 - Renamed to `@sigrun/memory-markdown` for the 0.1.0 release (repo

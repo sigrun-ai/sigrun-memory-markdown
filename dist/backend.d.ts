@@ -6,6 +6,7 @@
  * ({@link ./degenerate.ts}) proves the seam; spec B (honcho mapping)
  * replaces it without touching the harness wiring.
  */
+import type { Context } from "@earendil-works/chord";
 import type { EntryId } from "@earendil-works/pi-durable";
 /** Which side of one generation turn the record captures. */
 export type MemoryRole = "user" | "assistant";
@@ -51,9 +52,10 @@ export interface MemoryBackend {
      * backend scans the durable transcript (`conversation.entries()`), not the
      * observe buffer: recall must work for history the live window compacted
      * away (App C). A conversation with no recorded source answers empty rather
-     * than reaching any other conversation.
+     * than reaching any other conversation. `context` is the caller's, so a
+     * cancelled run stops its scan.
      */
-    recall(query: string, conversationId: number): Promise<RecallResult[]>;
+    recall(query: string, conversationId: number, context: Context): Promise<RecallResult[]>;
     /** The rendered `long-term-memory` prompt section; stable per backend. */
     section(): string;
 }
