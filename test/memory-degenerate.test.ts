@@ -596,6 +596,150 @@ test("observe records land in per-owner rings, not one shared ring", async () =>
 	]);
 });
 
+test("userDeleted appends the departing owner's records with transfer provenance", async () => {
+	const wiring = createMemory();
+	await wiring.runSettled(
+		fakeEvent({
+			conversationId: 1,
+			owner: "alice",
+			inputTexts: ["alice input"],
+			status: "answered",
+			answer: "alice answer",
+		}),
+		EMPTY_API,
+		BACKGROUND_CONTEXT,
+	);
+	await wiring.runSettled(
+		fakeEvent({
+			conversationId: 2,
+			owner: "bob",
+			inputTexts: ["bob input"],
+			status: "answered",
+			answer: "bob answer",
+		}),
+		EMPTY_API,
+		BACKGROUND_CONTEXT,
+	);
+
+	await wiring.userDeleted(
+		{ user: "alice", transferTo: "bob" },
+		EMPTY_API,
+		BACKGROUND_CONTEXT,
+	);
+
+	expect(wiring.backend.records("alice")).toEqual([]);
+	expect(wiring.backend.records("bob")).toMatchObject([
+		{ owner: "bob", text: "bob input" },
+		{ owner: "bob", text: "bob answer" },
+		{ owner: "alice", text: "alice input", transferredFrom: "alice" },
+		{ owner: "alice", text: "alice answer", transferredFrom: "alice" },
+	]);
+	expect(
+		wiring.backend.records("bob").slice(0, 2).every(
+			(record) => record.transferredFrom === undefined,
+		),
+	).toBe(true);
+});
+
+test("userDeleted is harmless when the departing owner never observed", async () => {
+	const wiring = createMemory();
+	await wiring.runSettled(
+		fakeEvent({
+			owner: "bob",
+			inputTexts: ["bob input"],
+			status: "answered",
+			answer: "bob answer",
+		}),
+		EMPTY_API,
+		BACKGROUND_CONTEXT,
+	);
+
+	await wiring.userDeleted(
+		{ user: "alice", transferTo: "bob" },
+		EMPTY_API,
+		BACKGROUND_CONTEXT,
+	);
+	expect(wiring.backend.records("alice")).toEqual([]);
+	expect(wiring.backend.records("bob").map((record) => record.text)).toEqual([
+		"bob input",
+		"bob answer",
+	]);
+});
+
+test("self-transfer preserves every record without adding provenance", async () => {
+	const wiring = createMemory();
+	await wiring.runSettled(
+		fakeEvent({
+			owner: "alice",
+			inputTexts: ["alice input"],
+			status: "answered",
+			answer: "alice answer",
+		}),
+		EMPTY_API,
+		BACKGROUND_CONTEXT,
+	);
+
+	await wiring.userDeleted(
+		{ user: "alice", transferTo: "alice" },
+		EMPTY_API,
+		BACKGROUND_CONTEXT,
+	);
+
+	expect(wiring.backend.records("alice").map((record) => record.text)).toEqual([
+		"alice input",
+		"alice answer",
+	]);
+	expect(
+		wiring.backend.records("alice").every(
+			(record) => record.transferredFrom === undefined,
+		),
+	).toBe(true);
+});
+
+test("userDeleted trims the combined ring oldest-first at capacity", async () => {
+	const wiring = createMemory(new DegenerateMemoryBackend(3));
+	wiring.backend.observe({
+		conversationId: 1,
+		owner: "bob",
+		generationId: 1,
+		role: "user",
+		text: "bob oldest",
+		timestamp: 1,
+	});
+	wiring.backend.observe({
+		conversationId: 1,
+		owner: "bob",
+		generationId: 1,
+		role: "assistant",
+		text: "bob newest",
+		timestamp: 2,
+	});
+	for (const [index, text] of ["alice oldest", "alice newest"].entries()) {
+		wiring.backend.observe({
+			conversationId: 2,
+			owner: "alice",
+			generationId: 2,
+			role: "user",
+			text,
+			timestamp: index + 3,
+		});
+	}
+
+	await wiring.userDeleted(
+		{ user: "alice", transferTo: "bob" },
+		EMPTY_API,
+		BACKGROUND_CONTEXT,
+	);
+
+	expect(wiring.backend.records("bob")).toMatchObject([
+		{ text: "bob newest" },
+		{ text: "alice oldest", transferredFrom: "alice" },
+		{ text: "alice newest", transferredFrom: "alice" },
+	]);
+	expect(wiring.backend.records("bob")[0]?.transferredFrom).toBeUndefined();
+	expect(wiring.backend.records("alice")).toEqual([]);
+});
+
 test("recall answers nothing for a conversation that settled before a restart", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-memory-"));
 	const dbPath = join(dir, "sigrun.db");

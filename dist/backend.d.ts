@@ -20,6 +20,8 @@ export type ObserveRecord = {
      * another user reads.
      */
     owner?: string;
+    /** The deleted owner this record came from, preserving provenance across the transfer to its new owner. */
+    transferredFrom?: string;
     /** The settled answer's EntryId surrogate both halves of the turn share — the runSettled event exposes no generation task id, and the answer entry is the run's one stable transcript anchor. */
     generationId: number;
     role: MemoryRole;

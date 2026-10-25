@@ -102,6 +102,16 @@ export interface RunSettledEvent {
 }
 
 /**
+ * The user-removal transfer payload, restating sigrun core's
+ * `UserDeletedPayload` so this package carries no core dependency. The
+ * loader validates `userDeleted` handlers by name rather than by shape.
+ */
+export interface UserDeletedPayload {
+	readonly user: string;
+	readonly transferTo: string;
+}
+
+/**
  * The narrowed read surface a `runSettled` handler receives — a structural
  * mirror of sigrun core's `MemoryEventApi`. `entry`/`entries` are bound to
  * the event's conversation; `document` reads any conversation's doc.
@@ -189,6 +199,26 @@ export class DegenerateMemoryBackend implements MemoryBackend {
 	 */
 	records(owner?: string): readonly ObserveRecord[] {
 		return [...(this.#rings.get(DegenerateMemoryBackend.ringKey(owner)) ?? [])];
+	}
+
+	/**
+	 * Deletion delivery can be retried, so the source ring must not remain
+	 * available for a duplicate transfer. Self-transfer and an absent source
+	 * are no-ops because neither has a distinct destination to receive memory.
+	 */
+	transferOwner(user: string, transferTo: string): void {
+		if (user === transferTo) return;
+		const source = this.#rings.get(user);
+		if (source === undefined) return;
+		const destination = this.#rings.get(transferTo) ?? [];
+		for (const record of source) {
+			destination.push({ ...record, transferredFrom: user });
+		}
+		if (destination.length > this.capacity) {
+			destination.splice(0, destination.length - this.capacity);
+		}
+		this.#rings.set(transferTo, destination);
+		this.#rings.delete(user);
 	}
 }
 
@@ -321,6 +351,12 @@ export interface MemoryWiring {
 		api: MemoryEventApi,
 		context: Context,
 	): void | Promise<void>;
+	/** Memory is content, so it follows ownership when a user is deleted. */
+	userDeleted(
+		event: UserDeletedPayload,
+		api: MemoryEventApi,
+		context: Context,
+	): void | Promise<void>;
 }
 
 /** Build the degenerate memory wiring. */
@@ -382,6 +418,12 @@ export function createMemory(
 				timestamp: event.outcome.answer.timestamp,
 				entryId: event.outcome.answerEntryId,
 			});
+		},
+		userDeleted(event, _api, _context) {
+			// Transcript readers stay with their conversations: deleting an owner
+			// does not move a conversation's history, so recall sources must not
+			// follow the observed records into another owner's memory.
+			backend.transferOwner(event.user, event.transferTo);
 		},
 	};
 }

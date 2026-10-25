@@ -70,6 +70,15 @@ export interface RunSettledEvent {
     };
 }
 /**
+ * The user-removal transfer payload, restating sigrun core's
+ * `UserDeletedPayload` so this package carries no core dependency. The
+ * loader validates `userDeleted` handlers by name rather than by shape.
+ */
+export interface UserDeletedPayload {
+    readonly user: string;
+    readonly transferTo: string;
+}
+/**
  * The narrowed read surface a `runSettled` handler receives — a structural
  * mirror of sigrun core's `MemoryEventApi`. `entry`/`entries` are bound to
  * the event's conversation; `document` reads any conversation's doc.
@@ -113,6 +122,12 @@ export declare class DegenerateMemoryBackend implements MemoryBackend {
      * copy keeps a caller from mutating the ring it was handed.
      */
     records(owner?: string): readonly ObserveRecord[];
+    /**
+     * Deletion delivery can be retried, so the source ring must not remain
+     * available for a duplicate transfer. Self-transfer and an absent source
+     * are no-ops because neither has a distinct destination to receive memory.
+     */
+    transferOwner(user: string, transferTo: string): void;
 }
 /** Scan one conversation's newest-first history for query matches. */
 export declare function recallFromEntries(source: RecallSource, query: string, context: Context): Promise<RecallResult[]>;
@@ -130,6 +145,8 @@ export interface MemoryWiring {
      * observes nothing.
      */
     runSettled(event: RunSettledEvent, api: MemoryEventApi, context: Context): void | Promise<void>;
+    /** Memory is content, so it follows ownership when a user is deleted. */
+    userDeleted(event: UserDeletedPayload, api: MemoryEventApi, context: Context): void | Promise<void>;
 }
 /** Build the degenerate memory wiring. */
 export declare function createMemory(backend?: DegenerateMemoryBackend): MemoryWiring;

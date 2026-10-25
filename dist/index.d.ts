@@ -9,5 +9,5 @@
  * richer backends implement.
  */
 export { createMemory, createMemory as default, DegenerateMemoryBackend, MEMORY_PLACEHOLDER, } from "./degenerate.js";
-export type { MemoryEventApi, MemoryWiring, RunSettledEvent, } from "./degenerate.js";
+export type { MemoryEventApi, MemoryWiring, RunSettledEvent, UserDeletedPayload, } from "./degenerate.js";
 export type { MemoryBackend, MemoryRole, ObserveRecord, RecallResult, } from "./backend.js";

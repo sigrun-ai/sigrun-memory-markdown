@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `userDeleted` transfers the deleted owner's observed records to the
+  receiving owner's ring, appending them after existing records and marking
+  each with `transferredFrom`. The combined ring keeps the same capacity
+  bound, while self-transfers and owners without records leave memory
+  unchanged.
+
 ### Security
 - `memory_recall` now searches only the calling conversation. It previously
   read whichever conversation settled a run most recently, regardless of
