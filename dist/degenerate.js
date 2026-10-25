@@ -57,6 +57,9 @@ const RECALL_HIT_LIMIT = 20;
 export class DegenerateMemoryBackend {
     capacity;
     #rings = new Map();
+    // Process-lifetime and intentionally unbounded: entries cover only
+    // conversations that ever settled, and core's readers re-read through the
+    // harness so retaining them does not pin stale transcript state.
     #sources = new Map();
     constructor(capacity = DEFAULT_RING_CAPACITY) {
         this.capacity = capacity;

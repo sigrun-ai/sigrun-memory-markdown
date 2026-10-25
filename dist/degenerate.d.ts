@@ -49,9 +49,7 @@ export declare const DEFAULT_RING_CAPACITY = 1000;
  * this package carries no core dependency, and the loader validates the
  * handler by name rather than by shape.
  *
- * `owner` is a SUPERSET of core's shape today: core stamps it with multi-user
- * M2's "owner on events" change, and until that lands every delivery leaves it
- * undefined, so records key the ownerless ring. `inputTexts` is
+ * Core stamps `owner`; it is absent for ownerless conversations. `inputTexts` is
  * position-paired with `inputs`; an input whose entry is unresolvable
  * contributes `""` at its position.
  */

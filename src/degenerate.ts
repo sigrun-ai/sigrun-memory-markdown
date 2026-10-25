@@ -81,9 +81,7 @@ const RECALL_HIT_LIMIT = 20;
  * this package carries no core dependency, and the loader validates the
  * handler by name rather than by shape.
  *
- * `owner` is a SUPERSET of core's shape today: core stamps it with multi-user
- * M2's "owner on events" change, and until that lands every delivery leaves it
- * undefined, so records key the ownerless ring. `inputTexts` is
+ * Core stamps `owner`; it is absent for ownerless conversations. `inputTexts` is
  * position-paired with `inputs`; an input whose entry is unresolvable
  * contributes `""` at its position.
  */
@@ -146,6 +144,9 @@ type RecallSource = {
  */
 export class DegenerateMemoryBackend implements MemoryBackend {
 	#rings = new Map<string, ObserveRecord[]>();
+	// Process-lifetime and intentionally unbounded: entries cover only
+	// conversations that ever settled, and core's readers re-read through the
+	// harness so retaining them does not pin stale transcript state.
 	#sources = new Map<number, RecallSource>();
 
 	constructor(readonly capacity: number = DEFAULT_RING_CAPACITY) {}
