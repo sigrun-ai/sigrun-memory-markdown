@@ -29,10 +29,13 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import {
 	createRegistry,
 	Harness,
+	type Conversation,
+	type ConversationId,
 	type EntryId,
 	type HarnessSettings,
 	type ModelRef,
 	type Registry,
+	type ToolExecutionApi,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import {
@@ -62,6 +65,17 @@ interface OpenedMemoryHarness {
 async function openMemoryHarness(
 	dir: string,
 	compaction?: CompactionSettings,
+): ReturnType<typeof openMemoryHarnessAt> {
+	return openMemoryHarnessAt(join(dir, "sigrun.db"), compaction);
+}
+
+/**
+ * `openMemoryHarness` against an explicit database file, so a test can close
+ * the harness and reopen the same store as a fresh process would.
+ */
+async function openMemoryHarnessAt(
+	dbPath: string,
+	compaction?: CompactionSettings,
 ): Promise<{ opened: OpenedMemoryHarness; memory: MemoryWiring; faux: ReturnType<typeof fauxProvider> }> {
 	const faux = fauxProvider({
 		provider: "faux",
@@ -77,7 +91,7 @@ async function openMemoryHarness(
 	registry.install(memory.extension);
 
 	const harness = await Harness.open(
-		await openNodeSqliteStorage(join(dir, "sigrun.db")),
+		await openNodeSqliteStorage(dbPath),
 		{
 			models,
 			registry,
@@ -113,6 +127,46 @@ const EMPTY_API: MemoryEventApi = {
 	document: async () => undefined,
 };
 
+/**
+ * Run the registered `memory_recall` tool as a call from `conversationId`,
+ * returning the text the model would see. The tool reaches the host only
+ * through `ToolExecutionApi.conversationId`, so that field is the whole
+ * stub — a tool that reads anything else here fails loudly.
+ */
+async function callRecallTool(
+	opened: OpenedMemoryHarness,
+	conversationId: ConversationId,
+	query: string,
+): Promise<{ text: string; isError: boolean }> {
+	const found = opened.registry
+		.snapshot()
+		.tools()
+		.find((entry) => entry.tool.name === "memory_recall");
+	if (found === undefined) throw new Error("memory_recall is not registered");
+	const api = { conversationId } as unknown as ToolExecutionApi;
+	const result = await found.tool.execute(
+		{ query } as never,
+		api,
+		BACKGROUND_CONTEXT,
+	);
+	const blocks = result.output ?? [];
+	const text = blocks
+		.map((block) => (block.type === "text" ? block.text : ""))
+		.join("\n");
+	return { text, isError: result.isError === true };
+}
+
+/** Create one ownerless conversation whose runs answer through the faux provider. */
+async function openConversation(
+	opened: OpenedMemoryHarness,
+): Promise<Conversation> {
+	const conversation = await opened.harness.createConversation(
+		{ ownership: { kind: "ownerless" }, agent: { model: opened.defaultModel } },
+		BACKGROUND_CONTEXT,
+	);
+	return conversation;
+}
+
 /** The event api rooted at one conversation's transcript scan. */
 function apiFor(root: { entries: MemoryEventApi["entries"] }): MemoryEventApi {
 	return {
@@ -129,9 +183,12 @@ function fakeEvent(options: {
 	status: "answered" | "unanswered";
 	answer?: string;
 	reason?: string;
+	conversationId?: number;
+	owner?: string;
 }): RunSettledEvent {
 	const base = {
-		conversationId: 1,
+		conversationId: options.conversationId ?? 1,
+		...(options.owner === undefined ? {} : { owner: options.owner }),
 		inputs: options.inputTexts.map(
 			(_, index) => (index + 1) as RunSettledEvent["inputs"][number],
 		),
@@ -179,12 +236,12 @@ test("an unanswered run observes nothing (no orphan user record)", async () => {
 		EMPTY_API,
 		BACKGROUND_CONTEXT,
 	);
-	// The pre-seam hook fired only on answer rounds; the seam keeps that
-	// contract — a model-failed run leaves no half-observed turn.
+	// The delivery still bound the conversation's transcript as its recall
+	// source (recall works after a failed turn too — the transcript exists
+	// regardless), while observing nothing into it.
 	expect(wiring.backend.records()).toHaveLength(0);
-	// The delivery still attached the recall source (recall works after a
-	// failed turn too — the transcript exists regardless).
-	expect(wiring.backend.hasRecallSource()).toBe(true);
+	const hits = await wiring.backend.recall("anything", 1, BACKGROUND_CONTEXT);
+	expect(hits).toEqual([]);
 });
 
 test("unresolvable inputs (\"\" at their position) record nothing", async () => {
@@ -232,7 +289,11 @@ test("recall works without any submit binding (reads the durable transcript)", a
 
 			// Recall reads the durable transcript and finds the turn — with real
 			// entry ids, proof the scan is transcript-backed, not ring-backed.
-			const hits = await memory.backend.recall("hello from the user");
+			const hits = await memory.backend.recall(
+				"hello from the user",
+				root.id,
+				BACKGROUND_CONTEXT,
+			);
 			expect(hits.length).toBeGreaterThanOrEqual(1);
 			expect(hits[0]?.role).toBe("user");
 			expect(hits[0]?.text).toContain("hello from the user");
@@ -303,12 +364,28 @@ test("recall reaches an entry the live window compacted away", async () => {
 
 			// Recall reads the durable transcript and still finds the compacted-out
 			// entry — the App C `entries()`-reachability verification. A *fresh*
-			// backend (attached to the same conversation, nothing observed yet)
-			// makes the read independent of the in-process observe buffer: only
-			// the transcript scan can hold the history.
+			// backend that observes nothing containing the secret (its one delivery
+			// carries only turn two's input) makes the read independent of the
+			// in-process observe ring: only the transcript scan can hold the history.
 			const fresh = new DegenerateMemoryBackend();
-			fresh.attachRecallSource({ id: root.id, entries: apiFor(root).entries });
-			const hits = await fresh.recall("sigrun-memorable");
+			const freshWiring = createMemory(fresh);
+			await freshWiring.runSettled(
+				fakeEvent({
+					conversationId: root.id,
+					inputTexts: ["second question"],
+					status: "answered",
+				}),
+				apiFor(root),
+				BACKGROUND_CONTEXT,
+			);
+			expect(
+				fresh.records().some((record) => record.text.includes("sigrun-memorable")),
+			).toBe(false);
+			const hits = await fresh.recall(
+				"sigrun-memorable",
+				root.id,
+				BACKGROUND_CONTEXT,
+			);
 			expect(hits.length).toBeGreaterThanOrEqual(1);
 			expect(hits.some((hit) => hit.text.includes("sigrun-memorable"))).toBe(
 				true,
@@ -348,6 +425,385 @@ test("section() returns the stable placeholder and the section renders it", asyn
 			).toBe(MEMORY_PLACEHOLDER);
 		} finally {
 			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("recall in conversation A finds A's text only, even after B settled last", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-memory-"));
+	try {
+		const { opened, memory, faux } = await openMemoryHarness(dir);
+		try {
+			const conversationA = await openConversation(opened);
+			faux.setResponses([fauxAssistantMessage("answer for A")]);
+			const firstA = await conversationA.submit(
+				{ type: "input", content: "alice-only marker alpha" },
+				BACKGROUND_CONTEXT,
+			);
+			await firstA.wait(BACKGROUND_CONTEXT);
+			await memory.runSettled(
+				fakeEvent({
+					conversationId: conversationA.id,
+					inputTexts: ["alice-only marker alpha"],
+					status: "answered",
+					answer: "answer for A",
+				}),
+				apiFor(conversationA),
+				BACKGROUND_CONTEXT,
+			);
+
+			// B settles LAST: with a single global source it becomes the one
+			// every later recall reads, which is exactly the leak.
+			const conversationB = await openConversation(opened);
+			faux.setResponses([fauxAssistantMessage("answer for B")]);
+			const firstB = await conversationB.submit(
+				{ type: "input", content: "bob-only marker beta" },
+				BACKGROUND_CONTEXT,
+			);
+			await firstB.wait(BACKGROUND_CONTEXT);
+			await memory.runSettled(
+				fakeEvent({
+					conversationId: conversationB.id,
+					inputTexts: ["bob-only marker beta"],
+					status: "answered",
+					answer: "answer for B",
+				}),
+				apiFor(conversationB),
+				BACKGROUND_CONTEXT,
+			);
+
+			// The tool, as A's agent calls it: A's text answers the query, B's does not.
+			const inA = await callRecallTool(
+				opened,
+				conversationA.id,
+				"marker alpha",
+			);
+			expect(inA.isError).toBe(false);
+			expect(inA.text).toContain("alice-only marker alpha");
+			expect(inA.text).not.toContain("bob-only marker beta");
+
+			// And the same query about B's text finds nothing in A.
+			const bTextInA = await callRecallTool(
+				opened,
+				conversationA.id,
+				"marker beta",
+			);
+			expect(bTextInA.isError).toBe(false);
+			expect(bTextInA.text).toBe("No matches found.");
+
+			// B still recalls its own text — scoping is not "latest wins either way".
+			const inB = await callRecallTool(opened, conversationB.id, "marker beta");
+			expect(inB.text).toContain("bob-only marker beta");
+			expect(inB.text).not.toContain("alice-only marker alpha");
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("recall in a conversation that never settled returns No matches found", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-memory-"));
+	try {
+		const { opened, memory, faux } = await openMemoryHarness(dir);
+		try {
+			// One conversation settles, so a global source WOULD have content.
+			const settled = await openConversation(opened);
+			faux.setResponses([fauxAssistantMessage("settled answer")]);
+			const submission = await settled.submit(
+				{ type: "input", content: "settled marker gamma" },
+				BACKGROUND_CONTEXT,
+			);
+			await submission.wait(BACKGROUND_CONTEXT);
+			await memory.runSettled(
+				fakeEvent({
+					conversationId: settled.id,
+					inputTexts: ["settled marker gamma"],
+					status: "answered",
+					answer: "settled answer",
+				}),
+				apiFor(settled),
+				BACKGROUND_CONTEXT,
+			);
+
+			// A conversation that has never settled a run: empty, never another's.
+			const fresh = await openConversation(opened);
+			const result = await callRecallTool(
+				opened,
+				fresh.id,
+				"settled marker gamma",
+			);
+			expect(result.isError).toBe(false);
+			expect(result.text).toBe("No matches found.");
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("observe records land in per-owner rings, not one shared ring", async () => {
+	const wiring = createMemory();
+	await wiring.runSettled(
+		fakeEvent({
+			conversationId: 1,
+			owner: "alice",
+			inputTexts: ["alice input"],
+			status: "answered",
+			answer: "alice answer",
+		}),
+		EMPTY_API,
+		BACKGROUND_CONTEXT,
+	);
+	await wiring.runSettled(
+		fakeEvent({
+			conversationId: 2,
+			owner: "bob",
+			inputTexts: ["bob input"],
+			status: "answered",
+			answer: "bob answer",
+		}),
+		EMPTY_API,
+		BACKGROUND_CONTEXT,
+	);
+	await wiring.runSettled(
+		fakeEvent({
+			conversationId: 3,
+			inputTexts: ["ownerless input"],
+			status: "answered",
+			answer: "ownerless answer",
+		}),
+		EMPTY_API,
+		BACKGROUND_CONTEXT,
+	);
+
+	expect(wiring.backend.records("alice").map((record) => record.text)).toEqual([
+		"alice input",
+		"alice answer",
+	]);
+	expect(wiring.backend.records("bob").map((record) => record.text)).toEqual([
+		"bob input",
+		"bob answer",
+	]);
+	// Ownerless runs key on "", never on a named user's ring.
+	expect(wiring.backend.records("").map((record) => record.text)).toEqual([
+		"ownerless input",
+		"ownerless answer",
+	]);
+});
+
+test("userDeleted appends the departing owner's records with transfer provenance", async () => {
+	const wiring = createMemory();
+	await wiring.runSettled(
+		fakeEvent({
+			conversationId: 1,
+			owner: "alice",
+			inputTexts: ["alice input"],
+			status: "answered",
+			answer: "alice answer",
+		}),
+		EMPTY_API,
+		BACKGROUND_CONTEXT,
+	);
+	await wiring.runSettled(
+		fakeEvent({
+			conversationId: 2,
+			owner: "bob",
+			inputTexts: ["bob input"],
+			status: "answered",
+			answer: "bob answer",
+		}),
+		EMPTY_API,
+		BACKGROUND_CONTEXT,
+	);
+
+	await wiring.userDeleted(
+		{ user: "alice", transferTo: "bob" },
+		EMPTY_API,
+		BACKGROUND_CONTEXT,
+	);
+
+	expect(wiring.backend.records("alice")).toEqual([]);
+	expect(wiring.backend.records("bob")).toMatchObject([
+		{ owner: "bob", text: "bob input" },
+		{ owner: "bob", text: "bob answer" },
+		{ owner: "alice", text: "alice input", transferredFrom: "alice" },
+		{ owner: "alice", text: "alice answer", transferredFrom: "alice" },
+	]);
+	expect(
+		wiring.backend.records("bob").slice(0, 2).every(
+			(record) => record.transferredFrom === undefined,
+		),
+	).toBe(true);
+});
+
+test("userDeleted is harmless when the departing owner never observed", async () => {
+	const wiring = createMemory();
+	await wiring.runSettled(
+		fakeEvent({
+			owner: "bob",
+			inputTexts: ["bob input"],
+			status: "answered",
+			answer: "bob answer",
+		}),
+		EMPTY_API,
+		BACKGROUND_CONTEXT,
+	);
+
+	await wiring.userDeleted(
+		{ user: "alice", transferTo: "bob" },
+		EMPTY_API,
+		BACKGROUND_CONTEXT,
+	);
+	expect(wiring.backend.records("alice")).toEqual([]);
+	expect(wiring.backend.records("bob").map((record) => record.text)).toEqual([
+		"bob input",
+		"bob answer",
+	]);
+});
+
+test("self-transfer preserves every record without adding provenance", async () => {
+	const wiring = createMemory();
+	await wiring.runSettled(
+		fakeEvent({
+			owner: "alice",
+			inputTexts: ["alice input"],
+			status: "answered",
+			answer: "alice answer",
+		}),
+		EMPTY_API,
+		BACKGROUND_CONTEXT,
+	);
+
+	await wiring.userDeleted(
+		{ user: "alice", transferTo: "alice" },
+		EMPTY_API,
+		BACKGROUND_CONTEXT,
+	);
+
+	expect(wiring.backend.records("alice").map((record) => record.text)).toEqual([
+		"alice input",
+		"alice answer",
+	]);
+	expect(
+		wiring.backend.records("alice").every(
+			(record) => record.transferredFrom === undefined,
+		),
+	).toBe(true);
+});
+
+test("userDeleted trims the combined ring oldest-first at capacity", async () => {
+	const wiring = createMemory(new DegenerateMemoryBackend(3));
+	wiring.backend.observe({
+		conversationId: 1,
+		owner: "bob",
+		generationId: 1,
+		role: "user",
+		text: "bob oldest",
+		timestamp: 1,
+	});
+	wiring.backend.observe({
+		conversationId: 1,
+		owner: "bob",
+		generationId: 1,
+		role: "assistant",
+		text: "bob newest",
+		timestamp: 2,
+	});
+	for (const [index, text] of ["alice oldest", "alice newest"].entries()) {
+		wiring.backend.observe({
+			conversationId: 2,
+			owner: "alice",
+			generationId: 2,
+			role: "user",
+			text,
+			timestamp: index + 3,
+		});
+	}
+
+	await wiring.userDeleted(
+		{ user: "alice", transferTo: "bob" },
+		EMPTY_API,
+		BACKGROUND_CONTEXT,
+	);
+
+	expect(wiring.backend.records("bob")).toMatchObject([
+		{ text: "bob newest" },
+		{ text: "alice oldest", transferredFrom: "alice" },
+		{ text: "alice newest", transferredFrom: "alice" },
+	]);
+	expect(wiring.backend.records("bob")[0]?.transferredFrom).toBeUndefined();
+	expect(wiring.backend.records("alice")).toEqual([]);
+});
+
+test("recall answers nothing for a conversation that settled before a restart", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-memory-"));
+	const dbPath = join(dir, "sigrun.db");
+	let conversationId: ConversationId | undefined;
+	try {
+		const first = await openMemoryHarnessAt(dbPath);
+		try {
+			const conversation = await openConversation(first.opened);
+			conversationId = conversation.id;
+			first.faux.setResponses([fauxAssistantMessage("before restart")]);
+			const submission = await conversation.submit(
+				{ type: "input", content: "durable marker epsilon" },
+				BACKGROUND_CONTEXT,
+			);
+			await submission.wait(BACKGROUND_CONTEXT);
+			await first.memory.runSettled(
+				fakeEvent({
+					conversationId: conversation.id,
+					inputTexts: ["durable marker epsilon"],
+					status: "answered",
+					answer: "before restart",
+				}),
+				apiFor(conversation),
+				BACKGROUND_CONTEXT,
+			);
+			// A process sees its own settled conversation.
+			expect(await first.memory.backend.recall(
+				"durable marker epsilon",
+				conversation.id,
+				BACKGROUND_CONTEXT,
+			)).not.toHaveLength(0);
+		} finally {
+			await first.opened.harness.close(BACKGROUND_CONTEXT);
+		}
+
+		// Reopened: the transcript is durable and still readable, but the reader
+		// map lives in process memory, so recall fails CLOSED — empty, never
+		// another conversation's history — until this conversation settles again.
+		// Pinned here because the failure is indistinguishable from "no matches"
+		// and would otherwise read as a bug rather than the documented boundary.
+		const second = await openMemoryHarnessAt(dbPath);
+		try {
+			if (conversationId === undefined) throw new Error("no conversation id");
+			const reopened = await second.opened.harness.conversation(
+				conversationId,
+				BACKGROUND_CONTEXT,
+			);
+			if (reopened === undefined) throw new Error("conversation did not reopen");
+			const page = await reopened.entries(
+				{},
+				100,
+				undefined,
+				BACKGROUND_CONTEXT,
+			);
+			expect(JSON.stringify(page.items)).toContain("durable marker epsilon");
+			expect(
+				await second.memory.backend.recall(
+					"durable marker epsilon",
+					reopened.id,
+					BACKGROUND_CONTEXT,
+				),
+			).toEqual([]);
+		} finally {
+			await second.opened.harness.close(BACKGROUND_CONTEXT);
 		}
 	} finally {
 		await rm(dir, { recursive: true, force: true });

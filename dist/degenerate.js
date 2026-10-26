@@ -4,11 +4,26 @@
  *
  * - `observe` appends to an in-process ring buffer — the schema is what
  *   spec B's honcho mapping consumes; the buffer itself is intentionally
- *   volatile (a degenerate backend is not durable memory).
+ *   volatile (a degenerate backend is not durable memory). Rings are
+ *   keyed by the run's owner (`""` when ownerless), so one user's turns
+ *   never sit in another user's ring.
  * - `recall` scans the durable transcript (`entries()`, newest-first,
  *   paginated) — NOT the observe buffer — so it reaches entries the live
- *   context window compacted away (App C verification).
+ *   context window compacted away (App C verification). Recall reads the
+ *   CALLING conversation's transcript only: pi-durable 1.3.0's
+ *   `ConversationHandle` has no `entries`, and `ToolExecutionApi` no
+ *   history reader, so each `runSettled` records that conversation's
+ *   transcript reader and the tool looks up its own conversation id.
  * - `section` returns the stable placeholder; spec B replaces the string.
+ *
+ * The recorded readers are held in PROCESS memory, not in the durable
+ * store: after a restart a conversation has no reader again until its
+ * next run settles, so a recall that lands before that answers "No
+ * matches found." even though the transcript is intact and readable. The
+ * alternative — resolving the reader per call — needs a history reader on
+ * `ToolExecutionApi`, which pi-durable 1.3.0 does not expose, so the
+ * per-conversation map is the only shape that answers from the calling
+ * conversation instead of the latest one.
  *
  * Capture (memory-seam port): the host delivers one `runSettled` event per
  * settled run — the run's input texts already host-resolved from the
@@ -16,11 +31,10 @@
  * unanswered reason). The extension observes the user halves from
  * `inputTexts` and the assistant half from an answered outcome; an
  * unanswered run observes NOTHING (no orphan user record — the behavior
- * the pre-seam afterResponse hook pinned). The same delivery binds the
- * event's entries surface as the recall source, so no submit-boundary
- * pass-through exists anymore.
+ * the pre-seam afterResponse hook pinned). The same delivery records the
+ * event's entries surface as that conversation's recall source, so no
+ * submit-boundary pass-through exists anymore.
  */
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Type } from "@earendil-works/pi-ai";
 import { AssistantEntry, defineExtension, defineTool, section, UserEntry, } from "@earendil-works/pi-durable";
 /** The stable `long-term-memory` section until a real backend is wired (spec B). */
@@ -34,49 +48,84 @@ const RECALL_SCAN_LIMIT = 10_000;
 /** Max hits returned per recall. */
 const RECALL_HIT_LIMIT = 20;
 /**
- * The degenerate backend: in-process observe ring + transcript recall.
- * The wiring attaches the recall source when the first `runSettled` event
- * arrives; before that, recall reports the unbound state, never guesses.
+ * The degenerate backend: in-process observe rings + transcript recall.
+ * Each `runSettled` delivery records its conversation's transcript reader,
+ * so recall answers from the calling conversation and nothing else; a
+ * conversation that never settled has no source and reports no matches —
+ * never another conversation's history.
  */
 export class DegenerateMemoryBackend {
     capacity;
-    #ring = [];
-    #recallSource;
+    #rings = new Map();
+    // Process-lifetime and intentionally unbounded: entries cover only
+    // conversations that ever settled, and core's readers re-read through the
+    // harness so retaining them does not pin stale transcript state.
+    #sources = new Map();
     constructor(capacity = DEFAULT_RING_CAPACITY) {
         this.capacity = capacity;
     }
+    /** Key a run by its owner: `""` is the ownerless (single-user) ring. */
+    static ringKey(owner) {
+        return owner ?? "";
+    }
     observe(record) {
-        this.#ring.push(record);
-        if (this.#ring.length > this.capacity) {
-            this.#ring.splice(0, this.#ring.length - this.capacity);
+        const key = DegenerateMemoryBackend.ringKey(record.owner);
+        let ring = this.#rings.get(key);
+        if (ring === undefined) {
+            ring = [];
+            this.#rings.set(key, ring);
+        }
+        ring.push(record);
+        if (ring.length > this.capacity) {
+            ring.splice(0, ring.length - this.capacity);
         }
     }
-    async recall(query) {
-        const source = this.#recallSource;
+    async recall(query, conversationId, context) {
+        const source = this.#sources.get(conversationId);
         if (source === undefined)
             return [];
-        // BACKGROUND_CONTEXT: recall is a host-initiated read with no incoming
-        // request context (the tool passes none); the degenerate scan carries
-        // no caller deadline to honour.
-        return recallFromEntries(source, query, BACKGROUND_CONTEXT);
+        return recallFromEntries(source, query, context);
     }
     section() {
         return MEMORY_PLACEHOLDER;
     }
     /**
-     * Wiring-internal: the `runSettled` delivery attaches the settled
-     * conversation's transcript as the recall source. Hosts never call this.
+     * The recorded entries reader for one conversation. The binding keeps the
+     * reader the host handed to that conversation's `runSettled`, so it must
+     * stay valid after the delivery returns — core's does (it re-reads through
+     * the harness per call, never an invocation-bound handle).
      */
-    attachRecallSource(source) {
-        this.#recallSource = source;
+    bindRecallSource(source) {
+        this.#sources.set(source.id, source);
     }
-    /** Whether a recall source is attached (the tool's no-early-answers guard). */
-    hasRecallSource() {
-        return this.#recallSource !== undefined;
+    /**
+     * The observed records for one owner (`""` = ownerless), oldest first.
+     * Test/diagnostic surface; it never reads another owner's ring, and the
+     * copy keeps a caller from mutating the ring it was handed.
+     */
+    records(owner) {
+        return [...(this.#rings.get(DegenerateMemoryBackend.ringKey(owner)) ?? [])];
     }
-    /** The observed records, oldest first. Test/diagnostic surface. */
-    records() {
-        return this.#ring;
+    /**
+     * Deletion delivery can be retried, so the source ring must not remain
+     * available for a duplicate transfer. Self-transfer and an absent source
+     * are no-ops because neither has a distinct destination to receive memory.
+     */
+    transferOwner(user, transferTo) {
+        if (user === transferTo)
+            return;
+        const source = this.#rings.get(user);
+        if (source === undefined)
+            return;
+        const destination = this.#rings.get(transferTo) ?? [];
+        for (const record of source) {
+            destination.push({ ...record, transferredFrom: user });
+        }
+        if (destination.length > this.capacity) {
+            destination.splice(0, destination.length - this.capacity);
+        }
+        this.#rings.set(transferTo, destination);
+        this.#rings.delete(user);
     }
 }
 /** Plain text of a user input (`string | (TextContent|ImageContent)[]`). */
@@ -143,11 +192,11 @@ export async function recallFromEntries(source, query, context) {
 /**
  * The recall tool the extension registers.
  *
- * The tool queries the backend's attached recall source — the settled
- * conversation's transcript, attached by the first `runSettled` delivery.
- * Before any run settles (or in a recovered process that re-executes the
- * tool first), no source is attached and the tool reports that, never
- * guesses.
+ * The tool reads the CALLING conversation (`api.conversationId`) and scans
+ * that conversation's transcript only — the source its own `runSettled`
+ * delivery recorded. A conversation that never settled has no source and
+ * therefore answers "No matches found.": it never falls back to another
+ * conversation's history, which is the leak this scoping closes.
  */
 function recallTool(backend) {
     return defineTool({
@@ -158,16 +207,10 @@ function recallTool(backend) {
         parameters: Type.Object({
             query: Type.String({ description: "Text to search for." }),
         }),
-        async execute(args, _api, _context) {
-            if (!backend.hasRecallSource()) {
-                return {
-                    output: [
-                        { type: "text", text: "No conversation bound to memory recall yet." },
-                    ],
-                    isError: true,
-                };
-            }
-            const hits = await backend.recall(args.query);
+        async execute(args, api, context) {
+            // The caller's context reaches the scan so a recall cancelled with its
+            // run stops reading, rather than outliving the run that asked.
+            const hits = await backend.recall(args.query, api.conversationId, context);
             if (hits.length === 0) {
                 return {
                     output: [{ type: "text", text: "No matches found." }],
@@ -191,11 +234,10 @@ export function createMemory(backend = new DegenerateMemoryBackend()) {
         backend,
         extension,
         runSettled(event, api, _context) {
-            // The settled conversation's transcript becomes the recall source.
-            // One source per backend: conversations share the degenerate ring,
-            // and the latest settled conversation is the one a recall call is
-            // about (the single-conversation host shape today).
-            backend.attachRecallSource({
+            // Each settled conversation keeps its own transcript reader: recall
+            // answers from the CALLING conversation, so one conversation's history
+            // never answers another's search (M4 Task 1).
+            backend.bindRecallSource({
                 id: event.conversationId,
                 entries: api.entries,
             });
@@ -217,6 +259,7 @@ export function createMemory(backend = new DegenerateMemoryBackend()) {
                     continue;
                 backend.observe({
                     conversationId: event.conversationId,
+                    ...(event.owner === undefined ? {} : { owner: event.owner }),
                     generationId: runId,
                     role: "user",
                     text,
@@ -229,12 +272,19 @@ export function createMemory(backend = new DegenerateMemoryBackend()) {
                 .join("");
             backend.observe({
                 conversationId: event.conversationId,
+                ...(event.owner === undefined ? {} : { owner: event.owner }),
                 generationId: runId,
                 role: "assistant",
                 text: answerText,
                 timestamp: event.outcome.answer.timestamp,
                 entryId: event.outcome.answerEntryId,
             });
+        },
+        userDeleted(event, _api, _context) {
+            // Transcript readers stay with their conversations: deleting an owner
+            // does not move a conversation's history, so recall sources must not
+            // follow the observed records into another owner's memory.
+            backend.transferOwner(event.user, event.transferTo);
         },
     };
 }

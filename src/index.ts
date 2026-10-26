@@ -19,6 +19,7 @@ export type {
 	MemoryEventApi,
 	MemoryWiring,
 	RunSettledEvent,
+	UserDeletedPayload,
 } from "./degenerate.js";
 export type {
 	MemoryBackend,
