@@ -809,3 +809,188 @@ test("recall answers nothing for a conversation that settled before a restart", 
 		await rm(dir, { recursive: true, force: true });
 	}
 });
+
+test("duplicate userDeleted delivery is idempotent (no double-appended records)", async () => {
+	// The deletion sequence's event delivery is at-least-once: a retried
+	// userDeleted must not append the departing owner's records a second
+	// time. The first delivery empties the source ring; the duplicate finds
+	// nothing to move.
+	const wiring = createMemory();
+	await wiring.runSettled(
+		fakeEvent({
+			conversationId: 1,
+			owner: "alice",
+			inputTexts: ["alice input"],
+			status: "answered",
+			answer: "alice answer",
+		}),
+		EMPTY_API,
+		BACKGROUND_CONTEXT,
+	);
+	await wiring.runSettled(
+		fakeEvent({
+			conversationId: 2,
+			owner: "bob",
+			inputTexts: ["bob input"],
+			status: "answered",
+			answer: "bob answer",
+		}),
+		EMPTY_API,
+		BACKGROUND_CONTEXT,
+	);
+
+	const deletion = { user: "alice", transferTo: "bob" };
+	await wiring.userDeleted(deletion, EMPTY_API, BACKGROUND_CONTEXT);
+	const afterFirst = wiring.backend.records("bob");
+	// Sanity: the first delivery moved exactly the two alice records.
+	expect(afterFirst).toHaveLength(4);
+
+	// The duplicate delivery changes NOTHING — byte-identical ring.
+	await wiring.userDeleted(deletion, EMPTY_API, BACKGROUND_CONTEXT);
+	expect(wiring.backend.records("bob")).toEqual(afterFirst);
+	expect(wiring.backend.records("alice")).toEqual([]);
+	// In particular no second pair of transferredFrom: "alice" records.
+	expect(
+		wiring.backend.records("bob").filter(
+			(record) => record.transferredFrom === "alice",
+		),
+	).toHaveLength(2);
+});
+
+test("a second transfer cannot resurrect the deleted source records", async () => {
+	// alice → bob, then a LATER alice → carol (e.g. a misdirected retry or a
+	// second deletion event with a different destination): alice's ring was
+	// deleted by the first transfer, so the second moves nothing and carol
+	// never receives alice's records.
+	const wiring = createMemory();
+	await wiring.runSettled(
+		fakeEvent({
+			conversationId: 1,
+			owner: "alice",
+			inputTexts: ["alice input"],
+			status: "answered",
+			answer: "alice answer",
+		}),
+		EMPTY_API,
+		BACKGROUND_CONTEXT,
+	);
+
+	await wiring.userDeleted(
+		{ user: "alice", transferTo: "bob" },
+		EMPTY_API,
+		BACKGROUND_CONTEXT,
+	);
+	expect(wiring.backend.records("bob").map((record) => record.text)).toEqual([
+		"alice input",
+		"alice answer",
+	]);
+
+	await wiring.userDeleted(
+		{ user: "alice", transferTo: "carol" },
+		EMPTY_API,
+		BACKGROUND_CONTEXT,
+	);
+	// No resurrection: carol's ring is empty, bob's copy is untouched, and
+	// alice's ring did not reappear.
+	expect(wiring.backend.records("carol")).toEqual([]);
+	expect(wiring.backend.records("bob").map((record) => record.text)).toEqual([
+		"alice input",
+		"alice answer",
+	]);
+	expect(wiring.backend.records("alice")).toEqual([]);
+});
+
+test("recall after ownership transfer stays scoped to the intended conversations", async () => {
+	// Transfer moves OBSERVE RINGS (the records), never TRANSCRIPT READERS:
+	// a conversation's history does not change owner when its owner's
+	// records move. After alice → bob, recall in alice's conversation still
+	// answers from that same conversation's transcript (conversations keep
+	// their own recall sources), and bob's conversation never serves
+	// alice's transcript.
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-memory-"));
+	try {
+		const { opened, memory, faux } = await openMemoryHarness(dir);
+		try {
+			const aliceConversation = await openConversation(opened);
+			faux.setResponses([fauxAssistantMessage("answer for alice")]);
+			const firstAlice = await aliceConversation.submit(
+				{ type: "input", content: "alice transfer marker zeta" },
+				BACKGROUND_CONTEXT,
+			);
+			await firstAlice.wait(BACKGROUND_CONTEXT);
+			await memory.runSettled(
+				fakeEvent({
+					conversationId: aliceConversation.id,
+					owner: "alice",
+					inputTexts: ["alice transfer marker zeta"],
+					status: "answered",
+					answer: "answer for alice",
+				}),
+				apiFor(aliceConversation),
+				BACKGROUND_CONTEXT,
+			);
+
+			const bobConversation = await openConversation(opened);
+			faux.setResponses([fauxAssistantMessage("answer for bob")]);
+			const firstBob = await bobConversation.submit(
+				{ type: "input", content: "bob transfer marker eta" },
+				BACKGROUND_CONTEXT,
+			);
+			await firstBob.wait(BACKGROUND_CONTEXT);
+			await memory.runSettled(
+				fakeEvent({
+					conversationId: bobConversation.id,
+					owner: "bob",
+					inputTexts: ["bob transfer marker eta"],
+					status: "answered",
+					answer: "answer for bob",
+				}),
+				apiFor(bobConversation),
+				BACKGROUND_CONTEXT,
+			);
+
+			await memory.userDeleted(
+				{ user: "alice", transferTo: "bob" },
+				EMPTY_API,
+				BACKGROUND_CONTEXT,
+			);
+
+			// The observed records moved with provenance...
+			expect(
+				memory.backend.records("bob").some(
+					(record) =>
+						record.transferredFrom === "alice" &&
+						record.text === "alice transfer marker zeta",
+				),
+			).toBe(true);
+			// ...but recall sources did NOT follow them: alice's conversation
+			// still recalls its own transcript (its entries are intact)...
+			const inAlice = await callRecallTool(
+				opened,
+				aliceConversation.id,
+				"transfer marker zeta",
+			);
+			expect(inAlice.text).toContain("alice transfer marker zeta");
+			// ...and bob's conversation recalls ONLY bob's transcript — the
+			// transferred observe record never becomes recall-visible history
+			// for bob's conversation.
+			const inBob = await callRecallTool(
+				opened,
+				bobConversation.id,
+				"transfer marker zeta",
+			);
+			expect(inBob.text).toBe("No matches found.");
+			const bobOwn = await callRecallTool(
+				opened,
+				bobConversation.id,
+				"transfer marker eta",
+			);
+			expect(bobOwn.text).toContain("bob transfer marker eta");
+			expect(bobOwn.text).not.toContain("alice transfer marker zeta");
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
