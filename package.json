@@ -1,6 +1,6 @@
 {
 	"name": "@sigrun/memory-markdown",
-	"version": "0.1.1",
+	"version": "0.1.2",
 	"description": "Degenerate (markdown/observe-recall) MemoryBackend extension for sigrun (pi-durable)",
 	"type": "module",
 	"engines": {
@@ -25,9 +25,9 @@
 		"prepare": "npm run build"
 	},
 	"peerDependencies": {
-		"@earendil-works/chord": "1.3.0",
-		"@earendil-works/pi-ai": "1.3.0",
-		"@earendil-works/pi-durable": "1.3.0"
+		"@earendil-works/chord": "1.3.0 || 1.4.0",
+		"@earendil-works/pi-ai": "1.3.0 || 1.4.0",
+		"@earendil-works/pi-durable": "1.3.0 || 1.4.0"
 	},
 	"devDependencies": {
 		"@earendil-works/chord": "1.3.0",
