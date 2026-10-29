@@ -143,7 +143,10 @@ async function callRecallTool(
 		.tools()
 		.find((entry) => entry.tool.name === "memory_recall");
 	if (found === undefined) throw new Error("memory_recall is not registered");
-	const api = { conversationId } as unknown as ToolExecutionApi;
+	// 1.4.0: code-mode-adjacent reads measure deadlines on the harness
+	// clock (`ToolExecutionApi.now`); the fake carries it alongside the
+	// one field the recall tool actually reads.
+	const api = { conversationId, now: () => Date.now() } as unknown as ToolExecutionApi;
 	const result = await found.tool.execute(
 		{ query } as never,
 		api,
