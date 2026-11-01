@@ -44,7 +44,9 @@ const VERSIONS_KEPT = 10;
 /**
  * One curation operation. `match` is a unique substring of exactly one
  * entry — ambiguous or missing matches throw rather than guess. `"*"` in
- * a remove means every entry.
+ * a remove means every entry. `add`/`replace` `text` must not contain
+ * {@link ENTRY_DELIMITER}: such a write would re-segment the file on the
+ * next read, so it throws and the batch lands nothing.
  */
 export type MemoryOp =
 	| { readonly op: "add"; readonly text: string }
@@ -133,6 +135,18 @@ export class MemoryFiles {
 		return entries.join(ENTRY_DELIMITER);
 	}
 
+	/**
+	 * Split file text into entries. A file whose every segment is empty
+	 * (hand-written bytes that are only delimiters — this layer can no
+	 * longer produce them, see the add/replace guard) reads as the EMPTY
+	 * state, a fresh-file equivalent, not a row of phantom empty entries;
+	 * the bytes themselves are never rewritten.
+	 */
+	static splitEntries(text: string): string[] {
+		const entries = text.split(ENTRY_DELIMITER);
+		return entries.every((entry) => entry === "") ? [] : entries;
+	}
+
 	/** The file's path under this user's data dir. */
 	path(file: MemoryFile): string {
 		return join(this.#dir, FILE_NAMES[file]);
@@ -159,9 +173,9 @@ export class MemoryFiles {
 				malformed: raw.malformed,
 			};
 		}
-			const text =
-				raw.bytes.length === 0 ? "" : new TextDecoder().decode(raw.bytes);
-		const entries = text === "" ? [] : text.split(ENTRY_DELIMITER);
+		const entries = MemoryFiles.splitEntries(
+			raw.bytes.length === 0 ? "" : new TextDecoder().decode(raw.bytes),
+		);
 		return {
 			entries,
 			chars: MemoryFiles.contentOf(entries).length,
@@ -233,10 +247,9 @@ export class MemoryFiles {
 			await mkdir(this.#dir, { recursive: true });
 			await writeFile(this.path(file), versionBytes);
 			const restoredRaw = new Uint8Array(versionBytes);
-			const restored =
-				restoredRaw.length === 0
-					? []
-					: new TextDecoder().decode(restoredRaw).split(ENTRY_DELIMITER);
+			const restored = MemoryFiles.splitEntries(
+				new TextDecoder().decode(restoredRaw),
+			);
 			return {
 				file,
 				changeId: savedId,
@@ -284,7 +297,7 @@ export class MemoryFiles {
 	#entriesOf(raw: { bytes: Uint8Array; malformed?: string }): string[] {
 		if (raw.malformed !== undefined) return [];
 		if (raw.bytes.length === 0) return [];
-		return new TextDecoder().decode(raw.bytes).split(ENTRY_DELIMITER);
+		return MemoryFiles.splitEntries(new TextDecoder().decode(raw.bytes));
 	}
 
 	/** Fold ops over entries; an ambiguous or missing match throws. */
@@ -295,6 +308,19 @@ export class MemoryFiles {
 	): string[] {
 		const next = [...entries];
 		for (const op of ops) {
+			if (
+				(op.op === "add" || op.op === "replace") &&
+				op.text.includes(ENTRY_DELIMITER)
+			) {
+				// Delimiter-bearing text would embed the separator inside one
+				// entry, so a later read re-segments the file — entry counts
+				// and match uniqueness shift under this layer's own contract.
+				// Reject before anything is written; the batch stays atomic.
+				throw new Error(
+					`${FILE_NAMES[file]}: ${op.op} text contains the entry delimiter ` +
+					`${JSON.stringify(ENTRY_DELIMITER)} and would re-segment the file`,
+				);
+			}
 			if (op.op === "add") {
 				next.push(op.text);
 				continue;

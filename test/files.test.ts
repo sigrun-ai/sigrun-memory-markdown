@@ -97,6 +97,42 @@ test("ambiguous or missing match throws", async () => {
 	).rejects.toThrow(/ambiguous/i);
 });
 
+test("add or replace text containing the entry delimiter throws and writes nothing", async () => {
+	const files = filesFor("alice");
+
+	// A delimiter-bearing add on an ABSENT file: rejected, file stays absent.
+	await expect(
+		files.apply("memory", [{ op: "add", text: `a${ENTRY_DELIMITER}b` }]),
+	).rejects.toThrow(/add.*delimiter|delimiter.*add/);
+	await expect(readFile(pathOf("alice", "memory"))).rejects.toMatchObject({
+		code: "ENOENT",
+	});
+
+	// Seed one entry so "unchanged" is observable, then a delimiter-bearing
+	// replace: rejected, the file's bytes untouched.
+	await files.apply("user", [{ op: "add", text: entry(1) }]);
+	const before = await readFile(pathOf("alice", "user"), "utf8");
+	await expect(
+		files.apply("user", [
+			{ op: "replace", match: "fact number 1", text: `x${ENTRY_DELIMITER}y` },
+		]),
+	).rejects.toThrow(/replace.*delimiter|delimiter.*replace/);
+	expect(await readFile(pathOf("alice", "user"), "utf8")).toBe(before);
+
+	// The delimiter anywhere in the text (leading here) is equally rejected.
+	await expect(
+		files.apply("user", [{ op: "add", text: `${ENTRY_DELIMITER}lead` }]),
+	).rejects.toThrow(/delimiter/);
+	expect(await readFile(pathOf("alice", "user"), "utf8")).toBe(before);
+});
+
+test("text containing the bare section mark (not the delimiter) applies normally", async () => {
+	const files = filesFor("alice");
+	const text = "acme uses the § mark alone: one entry, no re-segmentation.";
+	await files.apply("user", [{ op: "add", text }]);
+	expect((await files.read("user")).entries).toEqual([text]);
+});
+
 test("batch limit is checked on the result (remove+add fits when add alone would not)", async () => {
 	const files = filesFor("alice");
 	// A near-limit file: four DISTINCT ~500-char fillers (distinct so a
@@ -241,6 +277,22 @@ test("malformed file: read reports malformed, bytes unchanged; only a remove-all
 	const after = await files.read("memory");
 	expect(after.malformed).toBeUndefined();
 	expect(after.entries).toEqual([entry(1)]);
+});
+
+test("a file of only delimiters reads as the empty state, not phantom entries", async () => {
+	const files = filesFor("alice");
+	await mkdir(host.stores.user("alice").paths.data, { recursive: true });
+	// Hand-written bytes the layer itself can no longer produce (the guard
+	// rejects delimiter-bearing text): every split segment is empty.
+	await writeFile(
+		pathOf("alice", "memory"),
+		`${ENTRY_DELIMITER}${ENTRY_DELIMITER}`,
+	);
+	const read = await files.read("memory");
+	expect(read.entries).toEqual([]);
+	expect(read.chars).toBe(0);
+	// Not malformed — byte preservation stands; only the entry view collapses.
+	expect(read.malformed).toBeUndefined();
 });
 
 test("alice and bob directories never cross", async () => {
