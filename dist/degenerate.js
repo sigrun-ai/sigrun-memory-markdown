@@ -39,9 +39,11 @@
  * event's entries surface as that conversation's recall source, so no
  * submit-boundary pass-through exists anymore.
  */
+import { rm } from "node:fs/promises";
 import { Type } from "@earendil-works/pi-ai";
 import { AssistantEntry, defineExtension, defineTool, section, UserEntry, } from "@earendil-works/pi-durable";
 import { DEFAULT_LIMITS, MemoryFiles, } from "./files.js";
+import { createMemoryTarget, memoryWriteTool } from "./target.js";
 /** The stable `long-term-memory` section until a real backend is wired (spec B). Kept exported for back-compat; the live section never renders it. */
 export const MEMORY_PLACEHOLDER = "long-term memory backend not configured";
 /** What empty or ownerless memory renders — never the old placeholder. */
@@ -179,25 +181,12 @@ export class DegenerateMemoryBackend {
         return [...(this.#rings.get(DegenerateMemoryBackend.ringKey(owner)) ?? [])];
     }
     /**
-     * Deletion delivery can be retried, so the source ring must not remain
-     * available for a duplicate transfer. Self-transfer and an absent source
-     * are no-ops because neither has a distinct destination to receive memory.
+     * Drop one owner's ring entirely (userDeleted: memory does not
+     * survive its user — a recipient's ring must never absorb a deleted
+     * user's records). Idempotent; an absent ring is a no-op.
      */
-    transferOwner(user, transferTo) {
-        if (user === transferTo)
-            return;
-        const source = this.#rings.get(user);
-        if (source === undefined)
-            return;
-        const destination = this.#rings.get(transferTo) ?? [];
-        for (const record of source) {
-            destination.push({ ...record, transferredFrom: user });
-        }
-        if (destination.length > this.capacity) {
-            destination.splice(0, destination.length - this.capacity);
-        }
-        this.#rings.set(transferTo, destination);
-        this.#rings.delete(user);
+    forget(owner) {
+        this.#rings.delete(DegenerateMemoryBackend.ringKey(owner));
     }
 }
 /** Plain text of a user input (`string | (TextContent|ImageContent)[]`). */
@@ -322,15 +311,17 @@ export async function createMemory(host, backend = new DegenerateMemoryBackend()
     }, { limits });
     const extension = defineExtension({
         name: "sigrun.memory",
-        tools: [recallTool(backend)],
+        tools: [recallTool(backend), memoryWriteTool(host, filesFor)],
         sections: [
             section("long-term-memory", (input) => renderLiveSection(host, filesFor, input.conversationId)),
         ],
     });
+    const curationTargets = [createMemoryTarget(filesFor)];
     return {
         backend,
         extension,
         files: filesFor,
+        curationTargets,
         runSettled(event, api, _context) {
             // Each settled conversation keeps its own transcript reader: recall
             // answers from the CALLING conversation, so one conversation's history
@@ -378,11 +369,19 @@ export async function createMemory(host, backend = new DegenerateMemoryBackend()
                 entryId: event.outcome.answerEntryId,
             });
         },
-        userDeleted(event, _api, _context) {
-            // Transcript readers stay with their conversations: deleting an owner
-            // does not move a conversation's history, so recall sources must not
-            // follow the observed records into another owner's memory.
-            backend.transferOwner(event.user, event.transferTo);
+        userDeleted: async (event, _api, _context) => {
+            // Memory is deleted with its user (the 2026-10-26 ruling's
+            // reversal): the ring drops, the per-user files and their
+            // versions are removed, and the cached MemoryFiles is evicted
+            // so a recreated same-name user starts over a fresh directory
+            // (C2 review carry). The recipient is untouched — USER.md
+            // describes the departed user and must never merge into theirs.
+            backend.forget(event.user);
+            byUser.delete(event.user);
+            await rm(host.stores.user(event.user).paths.data, {
+                recursive: true,
+                force: true,
+            });
         },
     };
 }

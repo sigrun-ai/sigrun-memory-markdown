@@ -622,7 +622,7 @@ test("observe records land in per-owner rings, not one shared ring", async () =>
 	]);
 });
 
-test("userDeleted appends the departing owner's records with transfer provenance", async () => {
+test("userDeleted drops the departing owner's ring; the recipient's is untouched", async () => {
 	const wiring = await createMemory(unitHost);
 	await wiring.runSettled(
 		fakeEvent({
@@ -653,18 +653,15 @@ test("userDeleted appends the departing owner's records with transfer provenance
 		BACKGROUND_CONTEXT,
 	);
 
+	// Memory is deleted with its user (the 2026-10-26 ruling's reversal):
+	// alice's ring drops and NOTHING lands in bob's — USER.md and the
+	// observed records describe the departed user and must never merge
+	// into the recipient's.
 	expect(wiring.backend.records("alice")).toEqual([]);
-	expect(wiring.backend.records("bob")).toMatchObject([
-		{ owner: "bob", text: "bob input" },
-		{ owner: "bob", text: "bob answer" },
-		{ owner: "alice", text: "alice input", transferredFrom: "alice" },
-		{ owner: "alice", text: "alice answer", transferredFrom: "alice" },
+	expect(wiring.backend.records("bob").map((record) => record.text)).toEqual([
+		"bob input",
+		"bob answer",
 	]);
-	expect(
-		wiring.backend.records("bob").slice(0, 2).every(
-			(record) => record.transferredFrom === undefined,
-		),
-	).toBe(true);
 });
 
 test("userDeleted is harmless when the departing owner never observed", async () => {
@@ -692,7 +689,9 @@ test("userDeleted is harmless when the departing owner never observed", async ()
 	]);
 });
 
-test("self-transfer preserves every record without adding provenance", async () => {
+test("userDeleted drops the ring even when transferTo names the same user", async () => {
+	// A self-directed payload still names a deleted user; the drop is
+	// about the user, never the destination.
 	const wiring = await createMemory(unitHost);
 	await wiring.runSettled(
 		fakeEvent({
@@ -711,45 +710,32 @@ test("self-transfer preserves every record without adding provenance", async () 
 		BACKGROUND_CONTEXT,
 	);
 
-	expect(wiring.backend.records("alice").map((record) => record.text)).toEqual([
-		"alice input",
-		"alice answer",
-	]);
-	expect(
-		wiring.backend.records("alice").every(
-			(record) => record.transferredFrom === undefined,
-		),
-	).toBe(true);
+	expect(wiring.backend.records("alice")).toEqual([]);
 });
 
-test("userDeleted trims the combined ring oldest-first at capacity", async () => {
+test("userDeleted never touches the recipient's ring", async () => {
+	// The old combined-ring trim is gone with the transfer itself; what
+	// stays pinned is that bob's OWN ring — the recipient's — is exactly
+	// what it was, at whatever capacity the backend runs.
 	const wiring = await createMemory(unitHost, new DegenerateMemoryBackend(3));
-	wiring.backend.observe({
-		conversationId: 1,
-		owner: "bob",
-		generationId: 1,
-		role: "user",
-		text: "bob oldest",
-		timestamp: 1,
-	});
-	wiring.backend.observe({
-		conversationId: 1,
-		owner: "bob",
-		generationId: 1,
-		role: "assistant",
-		text: "bob newest",
-		timestamp: 2,
-	});
-	for (const [index, text] of ["alice oldest", "alice newest"].entries()) {
+	for (const [index, text] of ["bob oldest", "bob newest"].entries()) {
 		wiring.backend.observe({
-			conversationId: 2,
-			owner: "alice",
-			generationId: 2,
-			role: "user",
+			conversationId: 1,
+			owner: "bob",
+			generationId: 1,
+			role: index === 0 ? "user" : "assistant",
 			text,
-			timestamp: index + 3,
+			timestamp: index + 1,
 		});
 	}
+	wiring.backend.observe({
+		conversationId: 2,
+		owner: "alice",
+		generationId: 2,
+		role: "user",
+		text: "alice only",
+		timestamp: 3,
+	});
 
 	await wiring.userDeleted(
 		{ user: "alice", transferTo: "bob" },
@@ -757,12 +743,10 @@ test("userDeleted trims the combined ring oldest-first at capacity", async () =>
 		BACKGROUND_CONTEXT,
 	);
 
-	expect(wiring.backend.records("bob")).toMatchObject([
-		{ text: "bob newest" },
-		{ text: "alice oldest", transferredFrom: "alice" },
-		{ text: "alice newest", transferredFrom: "alice" },
+	expect(wiring.backend.records("bob").map((record) => record.text)).toEqual([
+		"bob oldest",
+		"bob newest",
 	]);
-	expect(wiring.backend.records("bob")[0]?.transferredFrom).toBeUndefined();
 	expect(wiring.backend.records("alice")).toEqual([]);
 });
 
@@ -836,11 +820,11 @@ test("recall answers nothing for a conversation that settled before a restart", 
 	}
 });
 
-test("duplicate userDeleted delivery is idempotent (no double-appended records)", async () => {
+test("duplicate userDeleted delivery is idempotent (nothing resurrects)", async () => {
 	// The deletion sequence's event delivery is at-least-once: a retried
-	// userDeleted must not append the departing owner's records a second
-	// time. The first delivery empties the source ring; the duplicate finds
-	// nothing to move.
+	// userDeleted must find nothing left to change. The first delivery
+	// dropped the ring and deleted the files; the duplicate changes
+	// nothing — bob's ring stays byte-identical, alice stays empty.
 	const wiring = await createMemory(unitHost);
 	await wiring.runSettled(
 		fakeEvent({
@@ -868,26 +852,20 @@ test("duplicate userDeleted delivery is idempotent (no double-appended records)"
 	const deletion = { user: "alice", transferTo: "bob" };
 	await wiring.userDeleted(deletion, EMPTY_API, BACKGROUND_CONTEXT);
 	const afterFirst = wiring.backend.records("bob");
-	// Sanity: the first delivery moved exactly the two alice records.
-	expect(afterFirst).toHaveLength(4);
+	// Sanity: bob kept exactly his own two records.
+	expect(afterFirst).toHaveLength(2);
 
-	// The duplicate delivery changes NOTHING — byte-identical ring.
+	// The duplicate delivery changes NOTHING.
 	await wiring.userDeleted(deletion, EMPTY_API, BACKGROUND_CONTEXT);
 	expect(wiring.backend.records("bob")).toEqual(afterFirst);
 	expect(wiring.backend.records("alice")).toEqual([]);
-	// In particular no second pair of transferredFrom: "alice" records.
-	expect(
-		wiring.backend.records("bob").filter(
-			(record) => record.transferredFrom === "alice",
-		),
-	).toHaveLength(2);
 });
 
-test("a second transfer cannot resurrect the deleted source records", async () => {
-	// alice → bob, then a LATER alice → carol (e.g. a misdirected retry or a
-	// second deletion event with a different destination): alice's ring was
-	// deleted by the first transfer, so the second moves nothing and carol
-	// never receives alice's records.
+test("a second deletion delivery with another destination still resurrects nothing", async () => {
+	// alice → bob, then a LATER alice → carol (a misdirected retry or a
+	// second deletion event with a different destination): the first
+	// delivery already dropped alice's ring, so the second changes nothing
+	// and carol never receives alice's records.
 	const wiring = await createMemory(unitHost);
 	await wiring.runSettled(
 		fakeEvent({
@@ -906,33 +884,24 @@ test("a second transfer cannot resurrect the deleted source records", async () =
 		EMPTY_API,
 		BACKGROUND_CONTEXT,
 	);
-	expect(wiring.backend.records("bob").map((record) => record.text)).toEqual([
-		"alice input",
-		"alice answer",
-	]);
+	expect(wiring.backend.records("bob")).toEqual([]);
 
 	await wiring.userDeleted(
 		{ user: "alice", transferTo: "carol" },
 		EMPTY_API,
 		BACKGROUND_CONTEXT,
 	);
-	// No resurrection: carol's ring is empty, bob's copy is untouched, and
-	// alice's ring did not reappear.
 	expect(wiring.backend.records("carol")).toEqual([]);
-	expect(wiring.backend.records("bob").map((record) => record.text)).toEqual([
-		"alice input",
-		"alice answer",
-	]);
+	expect(wiring.backend.records("bob")).toEqual([]);
 	expect(wiring.backend.records("alice")).toEqual([]);
 });
 
-test("recall after ownership transfer stays scoped to the intended conversations", async () => {
-	// Transfer moves OBSERVE RINGS (the records), never TRANSCRIPT READERS:
-	// a conversation's history does not change owner when its owner's
-	// records move. After alice → bob, recall in alice's conversation still
-	// answers from that same conversation's transcript (conversations keep
-	// their own recall sources), and bob's conversation never serves
-	// alice's transcript.
+test("recall scoping survives a userDeleted: sources stay with their conversations", async () => {
+	// userDeleted drops the ring and deletes the files, but TRANSCRIPT
+	// READERS stay with their conversations: deleting an owner does not
+	// move a conversation's history. After alice's deletion, recall in
+	// alice's conversation still answers from that same conversation's
+	// transcript, and bob's conversation never serves alice's transcript.
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-memory-"));
 	try {
 		const { opened, memory, faux } = await openMemoryHarness(dir);
@@ -981,15 +950,14 @@ test("recall after ownership transfer stays scoped to the intended conversations
 				BACKGROUND_CONTEXT,
 			);
 
-			// The observed records moved with provenance...
+			// The observed records were dropped with their user...
+			expect(memory.backend.records("alice")).toEqual([]);
 			expect(
 				memory.backend.records("bob").some(
-					(record) =>
-						record.transferredFrom === "alice" &&
-						record.text === "alice transfer marker zeta",
+					(record) => record.text === "alice transfer marker zeta",
 				),
-			).toBe(true);
-			// ...but recall sources did NOT follow them: alice's conversation
+			).toBe(false);
+			// ...but recall sources did NOT move: alice's conversation
 			// still recalls its own transcript (its entries are intact)...
 			const inAlice = await callRecallTool(
 				opened,

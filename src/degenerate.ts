@@ -40,10 +40,12 @@
  * submit-boundary pass-through exists anymore.
  */
 
+import { rm } from "node:fs/promises";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { Type } from "@earendil-works/pi-ai";
+import type { CurationTarget } from "@sigrun/sigrun/extension";
 import {
 	AssistantEntry,
 	defineExtension,
@@ -71,6 +73,7 @@ import {
 	type MemoryFile,
 	type ReadResult,
 } from "./files.js";
+import { createMemoryTarget, memoryWriteTool } from "./target.js";
 
 /** The stable `long-term-memory` section until a real backend is wired (spec B). Kept exported for back-compat; the live section never renders it. */
 export const MEMORY_PLACEHOLDER = "long-term memory backend not configured";
@@ -112,10 +115,11 @@ export interface RunSettledEvent {
 		| { readonly status: "unanswered"; readonly reason: string };
 }
 
-/**
- * The user-removal transfer payload, restating sigrun core's
+/** The user-removal payload, restating sigrun core's
  * `UserDeletedPayload` so this package carries no core dependency. The
  * loader validates `userDeleted` handlers by name rather than by shape.
+ * `transferTo` names the recipient of the departed user's other
+ * resources; memory NEVER follows it — it is deleted with its user.
  */
 export interface UserDeletedPayload {
 	readonly user: string;
@@ -319,26 +323,14 @@ export class DegenerateMemoryBackend implements MemoryBackend {
 	}
 
 	/**
-	 * Deletion delivery can be retried, so the source ring must not remain
-	 * available for a duplicate transfer. Self-transfer and an absent source
-	 * are no-ops because neither has a distinct destination to receive memory.
+	 * Drop one owner's ring entirely (userDeleted: memory does not
+	 * survive its user — a recipient's ring must never absorb a deleted
+	 * user's records). Idempotent; an absent ring is a no-op.
 	 */
-	transferOwner(user: string, transferTo: string): void {
-		if (user === transferTo) return;
-		const source = this.#rings.get(user);
-		if (source === undefined) return;
-		const destination = this.#rings.get(transferTo) ?? [];
-		for (const record of source) {
-			destination.push({ ...record, transferredFrom: user });
-		}
-		if (destination.length > this.capacity) {
-			destination.splice(0, destination.length - this.capacity);
-		}
-		this.#rings.set(transferTo, destination);
-		this.#rings.delete(user);
+	forget(owner?: string): void {
+		this.#rings.delete(DegenerateMemoryBackend.ringKey(owner));
 	}
 }
-
 /** Plain text of a user input (`string | (TextContent|ImageContent)[]`). */
 function contentText(
 	content: string | readonly { type: string; text?: string }[],
@@ -458,6 +450,8 @@ export interface MemoryWiring {
 	readonly extension: Extension;
 	/** The per-user memory files the section renders and the target writes. */
 	readonly files: MemoryFilesFor;
+	/** The curation targets declared on the factory result (Task C3). */
+	readonly curationTargets: readonly CurationTarget[];
 	/**
 	 * The host's settled-run delivery (sigrun memory seam): observes the
 	 * run's user inputs (host-resolved `inputTexts`) and, when the run
@@ -470,7 +464,7 @@ export interface MemoryWiring {
 		api: MemoryEventApi,
 		context: Context,
 	): void | Promise<void>;
-	/** Memory is content, so it follows ownership when a user is deleted. */
+	/** Memory is personal: it is deleted with its user, never transferred. */
 	userDeleted(
 		event: UserDeletedPayload,
 		api: MemoryEventApi,
@@ -525,7 +519,7 @@ export async function createMemory(
 
 	const extension = defineExtension({
 		name: "sigrun.memory",
-		tools: [recallTool(backend)],
+		tools: [recallTool(backend), memoryWriteTool(host, filesFor)],
 		sections: [
 			section("long-term-memory", (input) =>
 				renderLiveSection(host, filesFor, input.conversationId),
@@ -533,10 +527,13 @@ export async function createMemory(
 		],
 	});
 
+	const curationTargets = [createMemoryTarget(filesFor)];
+
 	return {
 		backend,
 		extension,
 		files: filesFor,
+		curationTargets,
 		runSettled(event, api, _context) {
 			// Each settled conversation keeps its own transcript reader: recall
 			// answers from the CALLING conversation, so one conversation's history
@@ -584,11 +581,19 @@ export async function createMemory(
 				entryId: event.outcome.answerEntryId,
 			});
 		},
-		userDeleted(event, _api, _context) {
-			// Transcript readers stay with their conversations: deleting an owner
-			// does not move a conversation's history, so recall sources must not
-			// follow the observed records into another owner's memory.
-			backend.transferOwner(event.user, event.transferTo);
+		userDeleted: async (event, _api, _context) => {
+			// Memory is deleted with its user (the 2026-10-26 ruling's
+			// reversal): the ring drops, the per-user files and their
+			// versions are removed, and the cached MemoryFiles is evicted
+			// so a recreated same-name user starts over a fresh directory
+			// (C2 review carry). The recipient is untouched — USER.md
+			// describes the departed user and must never merge into theirs.
+			backend.forget(event.user);
+			byUser.delete(event.user);
+			await rm(host.stores.user(event.user).paths.data, {
+				recursive: true,
+				force: true,
+			});
 		},
 	};
 }

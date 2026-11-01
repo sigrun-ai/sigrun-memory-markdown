@@ -41,6 +41,7 @@
  */
 import type { Context } from "@earendil-works/chord";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { CurationTarget } from "@sigrun/sigrun/extension";
 import type { Cursor, EntryId, EntryRecord, Extension, Page, SubmissionId } from "@earendil-works/pi-durable";
 import type { MemoryBackend, ObserveRecord, RecallResult } from "./backend.js";
 import { MemoryFiles, type MemoryFile, type ReadResult } from "./files.js";
@@ -72,10 +73,11 @@ export interface RunSettledEvent {
         readonly reason: string;
     };
 }
-/**
- * The user-removal transfer payload, restating sigrun core's
+/** The user-removal payload, restating sigrun core's
  * `UserDeletedPayload` so this package carries no core dependency. The
  * loader validates `userDeleted` handlers by name rather than by shape.
+ * `transferTo` names the recipient of the departed user's other
+ * resources; memory NEVER follows it — it is deleted with its user.
  */
 export interface UserDeletedPayload {
     readonly user: string;
@@ -163,11 +165,11 @@ export declare class DegenerateMemoryBackend implements MemoryBackend {
      */
     records(owner?: string): readonly ObserveRecord[];
     /**
-     * Deletion delivery can be retried, so the source ring must not remain
-     * available for a duplicate transfer. Self-transfer and an absent source
-     * are no-ops because neither has a distinct destination to receive memory.
+     * Drop one owner's ring entirely (userDeleted: memory does not
+     * survive its user — a recipient's ring must never absorb a deleted
+     * user's records). Idempotent; an absent ring is a no-op.
      */
-    transferOwner(user: string, transferTo: string): void;
+    forget(owner?: string): void;
 }
 /** Scan one conversation's newest-first history for query matches. */
 export declare function recallFromEntries(source: RecallSource, query: string, context: Context): Promise<RecallResult[]>;
@@ -179,6 +181,8 @@ export interface MemoryWiring {
     readonly extension: Extension;
     /** The per-user memory files the section renders and the target writes. */
     readonly files: MemoryFilesFor;
+    /** The curation targets declared on the factory result (Task C3). */
+    readonly curationTargets: readonly CurationTarget[];
     /**
      * The host's settled-run delivery (sigrun memory seam): observes the
      * run's user inputs (host-resolved `inputTexts`) and, when the run
@@ -187,7 +191,7 @@ export interface MemoryWiring {
      * observes nothing.
      */
     runSettled(event: RunSettledEvent, api: MemoryEventApi, context: Context): void | Promise<void>;
-    /** Memory is content, so it follows ownership when a user is deleted. */
+    /** Memory is personal: it is deleted with its user, never transferred. */
     userDeleted(event: UserDeletedPayload, api: MemoryEventApi, context: Context): void | Promise<void>;
 }
 /**

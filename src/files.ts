@@ -24,10 +24,15 @@ import { join } from "node:path";
 export type MemoryFile = "user" | "memory";
 
 /** One file's on-disk name. */
-const FILE_NAMES: Readonly<Record<MemoryFile, string>> = {
+export const FILE_NAMES: Readonly<Record<MemoryFile, string>> = {
 	user: "USER.md",
 	memory: "MEMORY.md",
 };
+
+/** One file's on-disk name (the display form error text uses). */
+export function memoryFileName(file: MemoryFile): string {
+	return FILE_NAMES[file];
+}
 
 /** Default per-file char limits (the `limits` setting overrides). */
 export const DEFAULT_LIMITS: Readonly<Record<MemoryFile, number>> = {

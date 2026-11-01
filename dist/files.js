@@ -20,10 +20,14 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 /** One file's on-disk name. */
-const FILE_NAMES = {
+export const FILE_NAMES = {
     user: "USER.md",
     memory: "MEMORY.md",
 };
+/** One file's on-disk name (the display form error text uses). */
+export function memoryFileName(file) {
+    return FILE_NAMES[file];
+}
 /** Default per-file char limits (the `limits` setting overrides). */
 export const DEFAULT_LIMITS = {
     user: 1375,

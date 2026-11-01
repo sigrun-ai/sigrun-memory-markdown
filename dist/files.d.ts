@@ -17,6 +17,10 @@
  */
 /** The two per-user memory files. */
 export type MemoryFile = "user" | "memory";
+/** One file's on-disk name. */
+export declare const FILE_NAMES: Readonly<Record<MemoryFile, string>>;
+/** One file's on-disk name (the display form error text uses). */
+export declare function memoryFileName(file: MemoryFile): string;
 /** Default per-file char limits (the `limits` setting overrides). */
 export declare const DEFAULT_LIMITS: Readonly<Record<MemoryFile, number>>;
 /** How entries are joined in the file (and split on read). */
