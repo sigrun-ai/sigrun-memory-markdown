@@ -6,8 +6,63 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [0.2.0] - 2026-11-01
+### Added
+- Per-user long-term memory files: `USER.md` (who the user is —
+  preferences, communication and work style) and `MEMORY.md` (their
+  environment and projects — tool quirks, paths, endpoints, decisions)
+  under the owner's data directory. One fact is one entry, entries are
+  joined by `§` separators, and every accepted change saves the previous
+  bytes as a version (newest ten per file) so any change can be undone.
+- The `memory` curation target (the curator contract, spec P7): the
+  `memory_write` tool — one atomic batch of `add`/`replace`/`remove`
+  operations over one file, reporting `details.curation = {changeId,
+  summary}` for the curator's undo surface — plus routing guidance,
+  `undo`, and a `maintain` pass (toolless digest runs per non-empty
+  file; a proposal that would remove more than a quarter of a file's
+  entries is discarded). The factory result carries the target on
+  `curationTargets`; the curator is the only writer, and a
+  `memory_write` call outside a curator run is captured as a review
+  hint ("remember this") rather than applied.
+- Hard per-file char limits (default 1375 for `USER.md`, 2200 for
+  `MEMORY.md`), checked on the batch RESULT — a batch that removes or
+  shortens enough to fit is one atomic step, never a rejected
+  intermediate state. The deployment `limits` settings block
+  (`{"limits":{"user":1375,"memory":2200}}`) overrides them; read
+  once at startup (restart-required, per the sigrun convention).
+- The `long-term-memory` section now renders real memory: the
+  conversation owner's two files, each under a usage header (`USER
+  PROFILE [63% — 867/1375 chars]`). Existing installs start empty — the
+  files do not exist until the first write, and the section shows
+  `No long-term memories yet.` until then. A file that cannot be read
+  is reported in place and left unchanged, never repaired.
+
 ### Changed
-- Forward-compatible with pi-durable 1.4.0 (widened peer range). No behaviour change.
+- Requires a sigrun core build that ships the curation-targets
+  contract (P7, `curationTargets` on the extension factory result).
+  That core support is unreleased at the time of this version bump, so
+  the minimum core version is deliberately not stated as a number —
+  it gets pinned in the README at release time. The package still adds
+  no `@sigrun/sigrun` dependency: the core types stay a devDependency.
+- **Breaking (behaviour):** `userDeleted` now DELETES the departing
+  user's memory — observe ring, `USER.md`/`MEMORY.md`, and versions —
+  instead of transferring the ring to the receiving owner. Memory is
+  personal: it describes its user, and a recipient's memory must never
+  absorb it. A recreated same-name user starts fresh.
+
+### Fixed
+- `add`/`replace` text containing the entry delimiter (`\n§\n`) is
+  rejected before anything is written. Such text would embed the
+  separator inside one entry, so the next read would re-segment the
+  file — entry counts and match uniqueness shifting under the layer's
+  own contract. This layer can no longer produce delimiter-embedded
+  entries.
+
+## [0.1.2] - 2026-10-29
+### Changed
+- Forward-compatible with pi-durable 1.4.0 (widened peer range). No
+  behaviour change.
 
 ## [0.1.1] - 2026-10-27
 ### Added
