@@ -7,7 +7,9 @@
  * nothing. The same delivery attaches the settled conversation's transcript
  * as the recall source — recall keeps reading the durable transcript
  * (`entries()`, NOT the observe buffer), reaching history the live window
- * compacted away. The section is a stable placeholder until spec B.
+ * compacted away. The section renders the per-user memory files live
+ * (section.test.ts pins the rendering; here only the wiring's ownerless
+ * neutral line matters).
  *
  * Harness-backed tests run against a faux provider (no network, no
  * credentials), proving the extension works against upstream pi-durable
@@ -18,7 +20,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, test } from "vitest";
+import { afterAll, beforeAll, expect, test } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord";
 import {
@@ -46,8 +48,25 @@ import {
 	type MemoryWiring,
 	type RunSettledEvent,
 } from "../src/degenerate.js";
+import { createFakeHost } from "./fake-host.js";
 
 type CompactionSettings = NonNullable<HarnessSettings["compaction"]>;
+
+/**
+ * One fake host shared by this file's wirings: nothing here writes memory
+ * files (the section tests live in section.test.ts), and every conversation
+ * — harness or synthetic — is ownerless under it, so the live section
+ * renders the neutral line without touching the stores.
+ */
+let unitHost: Awaited<ReturnType<typeof createFakeHost>>;
+
+beforeAll(async () => {
+	unitHost = await createFakeHost();
+});
+
+afterAll(async () => {
+	await unitHost.close();
+});
 
 /** A live pi-durable Harness plus the registry and default model it uses. */
 interface OpenedMemoryHarness {
@@ -86,7 +105,7 @@ async function openMemoryHarnessAt(
 	models.setProvider(faux.provider);
 	const defaultModel: ModelRef = { provider: "faux", modelId: "m" };
 
-	const memory = createMemory();
+	const memory = await createMemory(unitHost);
 	const registry = createRegistry();
 	registry.install(memory.extension);
 
@@ -214,7 +233,7 @@ function fakeEvent(options: {
 }
 
 test("createMemory() wiring carries NO submit; capture rides runSettled", async () => {
-	const wiring = createMemory();
+	const wiring = await createMemory(unitHost);
 	// The seam retired the submit pass-through — the field is gone.
 	expect((wiring as { submit?: unknown }).submit).toBeUndefined();
 	// Simulate the host delivering a settled run:
@@ -233,7 +252,7 @@ test("createMemory() wiring carries NO submit; capture rides runSettled", async 
 });
 
 test("an unanswered run observes nothing (no orphan user record)", async () => {
-	const wiring = createMemory();
+	const wiring = await createMemory(unitHost);
 	await wiring.runSettled(
 		fakeEvent({ inputTexts: ["doomed input"], status: "unanswered" }),
 		EMPTY_API,
@@ -248,7 +267,7 @@ test("an unanswered run observes nothing (no orphan user record)", async () => {
 });
 
 test("unresolvable inputs (\"\" at their position) record nothing", async () => {
-	const wiring = createMemory();
+	const wiring = await createMemory(unitHost);
 	await wiring.runSettled(
 		fakeEvent({
 			inputTexts: ["first", ""],
@@ -301,7 +320,7 @@ test("recall works without any submit binding (reads the durable transcript)", a
 			expect(hits[0]?.role).toBe("user");
 			expect(hits[0]?.text).toContain("hello from the user");
 
-			// The extension registered the recall tool and the placeholder section.
+			// The extension registered the recall tool and the live section.
 			const snapshot = opened.registry.snapshot();
 			expect(snapshot.tools().map((entry) => entry.tool.name)).toContain(
 				"memory_recall",
@@ -371,7 +390,7 @@ test("recall reaches an entry the live window compacted away", async () => {
 			// carries only turn two's input) makes the read independent of the
 			// in-process observe ring: only the transcript scan can hold the history.
 			const fresh = new DegenerateMemoryBackend();
-			const freshWiring = createMemory(fresh);
+			const freshWiring = await createMemory(unitHost, fresh);
 			await freshWiring.runSettled(
 				fakeEvent({
 					conversationId: root.id,
@@ -401,19 +420,23 @@ test("recall reaches an entry the live window compacted away", async () => {
 	}
 });
 
-test("section() returns the stable placeholder and the section renders it", async () => {
+test("backend.section() keeps the placeholder; the live section renders the ownerless neutral line", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-memory-"));
 	try {
 		const { opened, memory } = await openMemoryHarness(dir);
 		try {
+			// MEMORY_PLACEHOLDER stays exported for back-compat, and the backend
+			// method still returns it — but the REGISTERED section never renders
+			// it: with no owner (the unit host scripts none) it renders the live
+			// neutral line instead. section.test.ts pins the file rendering.
 			expect(memory.backend.section()).toBe(MEMORY_PLACEHOLDER);
 			const found = opened.registry
 				.snapshot()
 				.sections()
 				.find((entry) => entry.section.key === "long-term-memory");
 			expect(found).toBeDefined();
-			// The degenerate section ignores its input; the minimal PromptInput
-			// keeps this test independent of the other render fields.
+			// The minimal PromptInput keeps this test independent of the other
+			// render fields.
 			expect(
 				await found?.section.render(
 					{
@@ -425,7 +448,7 @@ test("section() returns the stable placeholder and the section renders it", asyn
 					},
 					BACKGROUND_CONTEXT,
 				),
-			).toBe(MEMORY_PLACEHOLDER);
+			).toBe("No long-term memories yet.");
 		} finally {
 			await opened.harness.close(BACKGROUND_CONTEXT);
 		}
@@ -550,7 +573,7 @@ test("recall in a conversation that never settled returns No matches found", asy
 });
 
 test("observe records land in per-owner rings, not one shared ring", async () => {
-	const wiring = createMemory();
+	const wiring = await createMemory(unitHost);
 	await wiring.runSettled(
 		fakeEvent({
 			conversationId: 1,
@@ -600,7 +623,7 @@ test("observe records land in per-owner rings, not one shared ring", async () =>
 });
 
 test("userDeleted appends the departing owner's records with transfer provenance", async () => {
-	const wiring = createMemory();
+	const wiring = await createMemory(unitHost);
 	await wiring.runSettled(
 		fakeEvent({
 			conversationId: 1,
@@ -645,7 +668,7 @@ test("userDeleted appends the departing owner's records with transfer provenance
 });
 
 test("userDeleted is harmless when the departing owner never observed", async () => {
-	const wiring = createMemory();
+	const wiring = await createMemory(unitHost);
 	await wiring.runSettled(
 		fakeEvent({
 			owner: "bob",
@@ -670,7 +693,7 @@ test("userDeleted is harmless when the departing owner never observed", async ()
 });
 
 test("self-transfer preserves every record without adding provenance", async () => {
-	const wiring = createMemory();
+	const wiring = await createMemory(unitHost);
 	await wiring.runSettled(
 		fakeEvent({
 			owner: "alice",
@@ -700,7 +723,7 @@ test("self-transfer preserves every record without adding provenance", async () 
 });
 
 test("userDeleted trims the combined ring oldest-first at capacity", async () => {
-	const wiring = createMemory(new DegenerateMemoryBackend(3));
+	const wiring = await createMemory(unitHost, new DegenerateMemoryBackend(3));
 	wiring.backend.observe({
 		conversationId: 1,
 		owner: "bob",
@@ -818,7 +841,7 @@ test("duplicate userDeleted delivery is idempotent (no double-appended records)"
 	// userDeleted must not append the departing owner's records a second
 	// time. The first delivery empties the source ring; the duplicate finds
 	// nothing to move.
-	const wiring = createMemory();
+	const wiring = await createMemory(unitHost);
 	await wiring.runSettled(
 		fakeEvent({
 			conversationId: 1,
@@ -865,7 +888,7 @@ test("a second transfer cannot resurrect the deleted source records", async () =
 	// second deletion event with a different destination): alice's ring was
 	// deleted by the first transfer, so the second moves nothing and carol
 	// never receives alice's records.
-	const wiring = createMemory();
+	const wiring = await createMemory(unitHost);
 	await wiring.runSettled(
 		fakeEvent({
 			conversationId: 1,

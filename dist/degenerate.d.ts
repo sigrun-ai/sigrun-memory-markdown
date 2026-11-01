@@ -14,7 +14,11 @@
  *   `ConversationHandle` has no `entries`, and `ToolExecutionApi` no
  *   history reader, so each `runSettled` records that conversation's
  *   transcript reader and the tool looks up its own conversation id.
- * - `section` returns the stable placeholder; spec B replaces the string.
+ * - `section` renders the per-user memory files live (Task C2): the owner
+ *   resolves through `host.identity.actingUser`, each file renders under a
+ *   usage header with its entries joined by `§` lines, and empty or
+ *   ownerless memory renders the neutral line. `MEMORY_PLACEHOLDER` stays
+ *   exported for back-compat but nothing renders it anymore.
  *
  * The recorded readers are held in PROCESS memory, not in the durable
  * store: after a restart a conversation has no reader again until its
@@ -39,7 +43,8 @@ import type { Context } from "@earendil-works/chord";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { Cursor, EntryId, EntryRecord, Extension, Page, SubmissionId } from "@earendil-works/pi-durable";
 import type { MemoryBackend, ObserveRecord, RecallResult } from "./backend.js";
-/** The stable `long-term-memory` section until a real backend is wired (spec B). */
+import { MemoryFiles, type MemoryFile, type ReadResult } from "./files.js";
+/** The stable `long-term-memory` section until a real backend is wired (spec B). Kept exported for back-compat; the live section never renders it. */
 export declare const MEMORY_PLACEHOLDER = "long-term memory backend not configured";
 /** Ring buffer capacity; the oldest records drop once full. */
 export declare const DEFAULT_RING_CAPACITY = 1000;
@@ -92,6 +97,43 @@ type RecallSource = {
     entries: MemoryEventApi["entries"];
 };
 /**
+ * The narrowed host surface the live section needs (Task C2): a
+ * structural subset of sigrun core's `SigrunHost` — the package carries
+ * no core dependency, the same restatement pattern {@link RunSettledEvent}
+ * uses. `stores.settings` is the deployment-scoped settings JSON (the
+ * `limits` override); `stores.user(<owner>).paths.data` is the per-user
+ * data directory the memory files live in; `identity.actingUser` resolves
+ * a conversation's owner (undefined = ownerless — no user memory).
+ */
+export interface MemoryHost {
+    readonly stores: {
+        user(user: string): {
+            readonly paths: {
+                readonly data: string;
+            };
+        };
+        readonly settings: {
+            get(): Promise<Record<string, unknown>>;
+        };
+    };
+    readonly identity: {
+        actingUser(conversationId: number): Promise<string | undefined>;
+    };
+}
+/**
+ * Render the live `long-term-memory` body from both files' reads: one
+ * block per file under its usage header (`USER PROFILE [<pct>% —
+ * <chars>/<limit> chars]`, then `MEMORY [...]`), entries joined by `§`
+ * lines. Both files empty → the neutral line. A malformed file renders
+ * `(<name> could not be read; it is left unchanged)` in ITS block; the
+ * other block still renders. The percentage is rounded to the nearest
+ * integer (1,474/2,200 renders 67%).
+ */
+export declare function renderMemorySection(files: {
+    readonly user: ReadResult;
+    readonly memory: ReadResult;
+}): string;
+/**
  * The degenerate backend: in-process observe rings + transcript recall.
  * Each `runSettled` delivery records its conversation's transcript reader,
  * so recall answers from the calling conversation and nothing else; a
@@ -135,6 +177,8 @@ export interface MemoryWiring {
     readonly backend: DegenerateMemoryBackend;
     /** Install into the harness registry (tools/section). */
     readonly extension: Extension;
+    /** The per-user memory files the section renders and the target writes. */
+    readonly files: MemoryFilesFor;
     /**
      * The host's settled-run delivery (sigrun memory seam): observes the
      * run's user inputs (host-resolved `inputTexts`) and, when the run
@@ -146,6 +190,28 @@ export interface MemoryWiring {
     /** Memory is content, so it follows ownership when a user is deleted. */
     userDeleted(event: UserDeletedPayload, api: MemoryEventApi, context: Context): void | Promise<void>;
 }
-/** Build the degenerate memory wiring. */
-export declare function createMemory(backend?: DegenerateMemoryBackend): MemoryWiring;
+/**
+ * The per-user memory files view (Task C2): one lazily-created
+ * `MemoryFiles` per owner — the same instance per user, so the section's
+ * reads and the C3 target's writes share one serialized queue per user.
+ * Exposed on the wiring for the target's `memory_write`/`undo`.
+ */
+export interface MemoryFilesFor {
+    /** One owner's files (created on first use; same instance per user). */
+    (user: string): MemoryFiles;
+    /** The limits in effect (defaults merged with the settings override). */
+    readonly limits: Readonly<Record<MemoryFile, number>>;
+}
+/**
+ * Build the degenerate memory wiring. THE HOST RULE: the first parameter
+ * declares the host, so sigrun's loader (which passes the host only to
+ * factories with `factory.length > 0`) lands it here — a zero-arg factory
+ * with a defaulted first parameter would consume the host as a real
+ * dependency, the regression core's arity gate exists for. The limits
+ * override is read ONCE at construction (settings are restart-required in
+ * the sigrun convention) and merged over the defaults for every
+ * `MemoryFiles` the wiring creates. The backend override is for direct
+ * programmatic use (the loader passes only the host).
+ */
+export declare function createMemory(host: MemoryHost, backend?: DegenerateMemoryBackend): Promise<MemoryWiring>;
 export {};
