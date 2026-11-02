@@ -110,4 +110,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wired into `npm test`.
 - Markdown memory-backend for sigrun (the degenerate-memory reference):
   observe/recall tools over markdown files with a capacity-bounded ring,
-  long-term-memory section, and memory-recall submit binding.
+  long-term-memory section, and memory-recall submit binding.## [0.2.3] - 2026-11-02
+### Fixed
+- The 0.2.2 lockfile version stamp (its tag predates the stamp fix and
+  cannot move — immutable ruleset; it publishes nothing).
+
+
