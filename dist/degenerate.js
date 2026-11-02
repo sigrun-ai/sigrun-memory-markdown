@@ -14,7 +14,11 @@
  *   `ConversationHandle` has no `entries`, and `ToolExecutionApi` no
  *   history reader, so each `runSettled` records that conversation's
  *   transcript reader and the tool looks up its own conversation id.
- * - `section` returns the stable placeholder; spec B replaces the string.
+ * - `section` renders the per-user memory files live (Task C2): the owner
+ *   resolves through `host.identity.actingUser`, each file renders under a
+ *   usage header with its entries joined by `§` lines, and empty or
+ *   ownerless memory renders the neutral line. `MEMORY_PLACEHOLDER` stays
+ *   exported for back-compat but nothing renders it anymore.
  *
  * The recorded readers are held in PROCESS memory, not in the durable
  * store: after a restart a conversation has no reader again until its
@@ -35,10 +39,15 @@
  * event's entries surface as that conversation's recall source, so no
  * submit-boundary pass-through exists anymore.
  */
+import { rm } from "node:fs/promises";
 import { Type } from "@earendil-works/pi-ai";
 import { AssistantEntry, defineExtension, defineTool, section, UserEntry, } from "@earendil-works/pi-durable";
-/** The stable `long-term-memory` section until a real backend is wired (spec B). */
+import { DEFAULT_LIMITS, MemoryFiles, } from "./files.js";
+import { createMemoryTarget, memoryWriteTool } from "./target.js";
+/** The stable `long-term-memory` section until a real backend is wired (spec B). Kept exported for back-compat; the live section never renders it. */
 export const MEMORY_PLACEHOLDER = "long-term memory backend not configured";
+/** What empty or ownerless memory renders — never the old placeholder. */
+const NO_LONG_TERM_MEMORIES = "No long-term memories yet.";
 /** Ring buffer capacity; the oldest records drop once full. */
 export const DEFAULT_RING_CAPACITY = 1000;
 /** Entries fetched per `entries()` page while scanning. */
@@ -47,6 +56,71 @@ const RECALL_PAGE_SIZE = 100;
 const RECALL_SCAN_LIMIT = 10_000;
 /** Max hits returned per recall. */
 const RECALL_HIT_LIMIT = 20;
+/** One section block's label, on-disk name, and file key, in render order. */
+const SECTION_FILES = [
+    { file: "user", label: "USER PROFILE", name: "USER.md" },
+    { file: "memory", label: "MEMORY", name: "MEMORY.md" },
+];
+/**
+ * Render the live `long-term-memory` body from both files' reads: one
+ * block per file under its usage header (`USER PROFILE [<pct>% —
+ * <chars>/<limit> chars]`, then `MEMORY [...]`), entries joined by `§`
+ * lines. Both files empty → the neutral line. A malformed file renders
+ * `(<name> could not be read; it is left unchanged)` in ITS block; the
+ * other block still renders. The percentage is rounded to the nearest
+ * integer (1,474/2,200 renders 67%).
+ */
+export function renderMemorySection(files) {
+    const bothEmpty = [files.user, files.memory].every((read) => read.entries.length === 0 && read.malformed === undefined);
+    if (bothEmpty)
+        return NO_LONG_TERM_MEMORIES;
+    return SECTION_FILES.map(({ file, label, name }) => {
+        const read = files[file];
+        const pct = Math.round((read.chars / read.limit) * 100);
+        const head = `${label} [${pct}% — ${read.chars}/${read.limit} chars]`;
+        if (read.malformed !== undefined) {
+            return `${head}\n(${name} could not be read; it is left unchanged)`;
+        }
+        if (read.entries.length === 0)
+            return head;
+        return `${head}\n${MemoryFiles.contentOf(read.entries)}`;
+    }).join("\n\n");
+}
+/**
+ * Parse the deployment `limits` settings block over the defaults.
+ * Gentle-parse posture (the settings convention): a malformed or
+ * non-positive limit falls back to its default — the parser never throws.
+ */
+function mergeLimits(raw) {
+    const block = raw.limits;
+    if (typeof block !== "object" || block === null)
+        return DEFAULT_LIMITS;
+    const overrides = {};
+    for (const file of ["user", "memory"]) {
+        const value = block[file];
+        if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+            overrides[file] = value;
+        }
+    }
+    return Object.freeze({ ...DEFAULT_LIMITS, ...overrides });
+}
+/**
+ * Render the live section for one conversation: resolve the owner, read
+ * that owner's two files (the wiring's per-owner `MemoryFiles` — the same
+ * instance the C3 target writes through), render. No owner → the neutral
+ * line (an ownerless conversation renders no user memory — never another
+ * user's).
+ */
+async function renderLiveSection(host, filesFor, conversationId) {
+    const owner = await host.identity.actingUser(conversationId);
+    if (owner === undefined)
+        return NO_LONG_TERM_MEMORIES;
+    const files = filesFor(owner);
+    return renderMemorySection({
+        user: await files.read("user"),
+        memory: await files.read("memory"),
+    });
+}
 /**
  * The degenerate backend: in-process observe rings + transcript recall.
  * Each `runSettled` delivery records its conversation's transcript reader,
@@ -107,25 +181,12 @@ export class DegenerateMemoryBackend {
         return [...(this.#rings.get(DegenerateMemoryBackend.ringKey(owner)) ?? [])];
     }
     /**
-     * Deletion delivery can be retried, so the source ring must not remain
-     * available for a duplicate transfer. Self-transfer and an absent source
-     * are no-ops because neither has a distinct destination to receive memory.
+     * Drop one owner's ring entirely (userDeleted: memory does not
+     * survive its user — a recipient's ring must never absorb a deleted
+     * user's records). Idempotent; an absent ring is a no-op.
      */
-    transferOwner(user, transferTo) {
-        if (user === transferTo)
-            return;
-        const source = this.#rings.get(user);
-        if (source === undefined)
-            return;
-        const destination = this.#rings.get(transferTo) ?? [];
-        for (const record of source) {
-            destination.push({ ...record, transferredFrom: user });
-        }
-        if (destination.length > this.capacity) {
-            destination.splice(0, destination.length - this.capacity);
-        }
-        this.#rings.set(transferTo, destination);
-        this.#rings.delete(user);
+    forget(owner) {
+        this.#rings.delete(DegenerateMemoryBackend.ringKey(owner));
     }
 }
 /** Plain text of a user input (`string | (TextContent|ImageContent)[]`). */
@@ -223,16 +284,44 @@ function recallTool(backend) {
         },
     });
 }
-/** Build the degenerate memory wiring. */
-export function createMemory(backend = new DegenerateMemoryBackend()) {
+/**
+ * Build the degenerate memory wiring. THE HOST RULE: the first parameter
+ * declares the host, so sigrun's loader (which passes the host only to
+ * factories with `factory.length > 0`) lands it here — a zero-arg factory
+ * with a defaulted first parameter would consume the host as a real
+ * dependency, the regression core's arity gate exists for. The limits
+ * override is read ONCE at construction (settings are restart-required in
+ * the sigrun convention) and merged over the defaults for every
+ * `MemoryFiles` the wiring creates. The backend override is for direct
+ * programmatic use (the loader passes only the host).
+ */
+export async function createMemory(host, backend = new DegenerateMemoryBackend()) {
+    const limits = mergeLimits(await host.stores.settings.get());
+    const byUser = new Map();
+    const filesFor = Object.assign((user) => {
+        let files = byUser.get(user);
+        if (files === undefined) {
+            files = new MemoryFiles({
+                dir: host.stores.user(user).paths.data,
+                limits,
+            });
+            byUser.set(user, files);
+        }
+        return files;
+    }, { limits });
     const extension = defineExtension({
         name: "sigrun.memory",
-        tools: [recallTool(backend)],
-        sections: [section("long-term-memory", () => backend.section())],
+        tools: [recallTool(backend), memoryWriteTool(host, filesFor)],
+        sections: [
+            section("long-term-memory", (input) => renderLiveSection(host, filesFor, input.conversationId)),
+        ],
     });
+    const curationTargets = [createMemoryTarget(filesFor)];
     return {
         backend,
         extension,
+        files: filesFor,
+        curationTargets,
         runSettled(event, api, _context) {
             // Each settled conversation keeps its own transcript reader: recall
             // answers from the CALLING conversation, so one conversation's history
@@ -280,11 +369,19 @@ export function createMemory(backend = new DegenerateMemoryBackend()) {
                 entryId: event.outcome.answerEntryId,
             });
         },
-        userDeleted(event, _api, _context) {
-            // Transcript readers stay with their conversations: deleting an owner
-            // does not move a conversation's history, so recall sources must not
-            // follow the observed records into another owner's memory.
-            backend.transferOwner(event.user, event.transferTo);
+        userDeleted: async (event, _api, _context) => {
+            // Memory is deleted with its user (the 2026-10-26 ruling's
+            // reversal): the ring drops, the per-user files and their
+            // versions are removed, and the cached MemoryFiles is evicted
+            // so a recreated same-name user starts over a fresh directory
+            // (C2 review carry). The recipient is untouched — USER.md
+            // describes the departed user and must never merge into theirs.
+            backend.forget(event.user);
+            byUser.delete(event.user);
+            await rm(host.stores.user(event.user).paths.data, {
+                recursive: true,
+                force: true,
+            });
         },
     };
 }
