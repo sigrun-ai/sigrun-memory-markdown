@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-02
+### Fixed
+- The lockfile carries the `@sigrun` sibling link entries, so `npm ci`
+  (the release test job) is in sync with the `file:` dev specs.
+
 ## [0.2.0] - 2026-11-01
 ### Added
 - Per-user long-term memory files: `USER.md` (who the user is —
