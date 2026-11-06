@@ -40,7 +40,7 @@
  * submit-boundary pass-through exists anymore.
  */
 import { rm } from "node:fs/promises";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { AssistantEntry, defineExtension, defineTool, section, UserEntry, } from "@earendil-works/pi-durable";
 import { DEFAULT_LIMITS, MemoryFiles, } from "./files.js";
 import { createMemoryTarget, memoryWriteTool } from "./target.js";

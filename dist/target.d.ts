@@ -23,7 +23,7 @@
  * `maxPriorEntryLossFraction` default, 0.25) — maintenance tightens,
  * it never guts.
  */
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import type { CurationTarget } from "@sigrun/sigrun/extension";
 import type { MemoryFilesFor, MemoryHost } from "./degenerate.js";
 /**

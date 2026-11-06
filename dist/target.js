@@ -23,7 +23,7 @@
  * `maxPriorEntryLossFraction` default, 0.25) — maintenance tightens,
  * it never guts.
  */
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { defineTool } from "@earendil-works/pi-durable";
 import { MemoryOverLimit, memoryFileName, } from "./files.js";
 /**
