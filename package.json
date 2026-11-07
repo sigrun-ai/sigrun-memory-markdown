@@ -1,6 +1,6 @@
 {
 	"name": "@sigrun/memory-markdown",
-	"version": "0.2.3",
+	"version": "0.2.4",
 	"description": "Markdown long-term memory for sigrun: per-user USER.md/MEMORY.md, the live long-term-memory section, and the memory curation target",
 	"type": "module",
 	"engines": {
