@@ -44,7 +44,7 @@ import { rm } from "node:fs/promises";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import type { CurationTarget } from "@sigrun/sigrun/extension";
 import {
 	AssistantEntry,
