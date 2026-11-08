@@ -2,6 +2,7 @@
 # (release workstream Task 2.2) — the jobs live there so they cannot
 # drift across the 10 repos. needs-core: true (file:-linked dev deps
 # since the curation target imports @sigrun/sigrun types).
+# core-ref: release tests against the latest released core.
 name: ci
 
 on:
@@ -17,3 +18,4 @@ jobs:
     uses: sigrun-ai/sigrun/.github/workflows/ext-ci.yml@main
     with:
       needs-core: true
+      core-ref: release
