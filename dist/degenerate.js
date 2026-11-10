@@ -42,7 +42,8 @@
 import { rm } from "node:fs/promises";
 import { Type } from "typebox";
 import { AssistantEntry, defineExtension, defineTool, section, UserEntry, } from "@earendil-works/pi-durable";
-import { DEFAULT_LIMITS, MemoryFiles, } from "./files.js";
+import { MemoryFiles, } from "./files.js";
+import { MEMORY_MARKDOWN_SETTINGS_SCHEMA, } from "./settings-schema.js";
 import { createMemoryTarget, memoryWriteTool } from "./target.js";
 /** The stable `long-term-memory` section until a real backend is wired (spec B). Kept exported for back-compat; the live section never renders it. */
 export const MEMORY_PLACEHOLDER = "long-term memory backend not configured";
@@ -87,24 +88,6 @@ export function renderMemorySection(files) {
     }).join("\n\n");
 }
 /**
- * Parse the deployment `limits` settings block over the defaults.
- * Gentle-parse posture (the settings convention): a malformed or
- * non-positive limit falls back to its default — the parser never throws.
- */
-function mergeLimits(raw) {
-    const block = raw.limits;
-    if (typeof block !== "object" || block === null)
-        return DEFAULT_LIMITS;
-    const overrides = {};
-    for (const file of ["user", "memory"]) {
-        const value = block[file];
-        if (typeof value === "number" && Number.isFinite(value) && value > 0) {
-            overrides[file] = value;
-        }
-    }
-    return Object.freeze({ ...DEFAULT_LIMITS, ...overrides });
-}
-/**
  * Render the live section for one conversation: resolve the owner, read
  * that owner's two files (the wiring's per-owner `MemoryFiles` — the same
  * instance the C3 target writes through), render. No owner → the neutral
@@ -115,7 +98,7 @@ async function renderLiveSection(host, filesFor, conversationId) {
     const owner = await host.identity.actingUser(conversationId);
     if (owner === undefined)
         return NO_LONG_TERM_MEMORIES;
-    const files = filesFor(owner);
+    const files = await filesFor(owner);
     return renderMemorySection({
         user: await files.read("user"),
         memory: await files.read("memory"),
@@ -290,25 +273,43 @@ function recallTool(backend) {
  * factories with `factory.length > 0`) lands it here — a zero-arg factory
  * with a defaulted first parameter would consume the host as a real
  * dependency, the regression core's arity gate exists for. The limits
- * override is read ONCE at construction (settings are restart-required in
- * the sigrun convention) and merged over the defaults for every
- * `MemoryFiles` the wiring creates. The backend override is for direct
- * programmatic use (the loader passes only the host).
+ * override is read ONCE at construction (a `restart` setting) through the
+ * declared handle, which applies `DEFAULT_LIMITS` and repairs a malformed
+ * stored block to them — the deleted mergeLimits' posture. The backend
+ * override is for direct programmatic use (the loader passes only the
+ * host).
  */
 export async function createMemory(host, backend = new DegenerateMemoryBackend()) {
-    const limits = mergeLimits(await host.stores.settings.get());
+    // Declare first: core requires the declaration during the factory call.
+    // The values are read on FIRST USE, never here — a factory-time read
+    // resolves the package-derived provisional slug, and this extension's
+    // declared name (`sigrun.memory` → `sigrun-memory`) differs from its
+    // package name, so the read would miss the file the settings page writes.
+    const settings = host.settings.declare({
+        schema: MEMORY_MARKDOWN_SETTINGS_SCHEMA,
+    });
+    // Memoized: the limits are a `restart` setting, so one resolution per
+    // boot is the whole contract (and every `MemoryFiles` must see the
+    // same limits — a per-call read could split a boot across two values).
+    let limitsPromise;
+    const resolveLimits = () => {
+        limitsPromise ??= settings
+            .get()
+            .then((settled) => Object.freeze(settled.limits));
+        return limitsPromise;
+    };
     const byUser = new Map();
-    const filesFor = Object.assign((user) => {
+    const filesFor = Object.assign(async (user) => {
         let files = byUser.get(user);
         if (files === undefined) {
             files = new MemoryFiles({
                 dir: host.stores.user(user).paths.data,
-                limits,
+                limits: await resolveLimits(),
             });
             byUser.set(user, files);
         }
         return files;
-    }, { limits });
+    }, { limits: resolveLimits });
     const extension = defineExtension({
         name: "sigrun.memory",
         tools: [recallTool(backend), memoryWriteTool(host, filesFor)],

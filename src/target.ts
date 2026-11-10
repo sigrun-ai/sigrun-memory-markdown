@@ -147,7 +147,7 @@ export function memoryWriteTool(
 				);
 			}
 			try {
-				const change = await filesFor(user).apply(
+				const change = await (await filesFor(user)).apply(
 					args.file,
 					args.ops,
 					args.reason === undefined ? {} : { reviewId: args.reason },
@@ -298,7 +298,7 @@ export function createMemoryTarget(
 			changeId: string,
 			_ctx: HandlerContext,
 		): Promise<void> {
-			await filesFor(user).undo(changeId);
+			await (await filesFor(user)).undo(changeId);
 		},
 		async maintain(
 			user: string,
@@ -310,7 +310,7 @@ export function createMemoryTarget(
 			let runs = budget.runs;
 			for (const file of ["user", "memory"] as const) {
 				if (runs < 1 || Date.now() >= budget.deadline) break;
-				const read = await filesFor(user).read(file);
+				const read = await (await filesFor(user)).read(file);
 				// An empty file has nothing to merge or drop — spending a
 				// digest run on it buys nothing.
 				if (read.entries.length === 0) continue;
@@ -325,7 +325,7 @@ export function createMemoryTarget(
 					continue;
 				}
 				try {
-					const change = await filesFor(user).apply(file, ops);
+					const change = await (await filesFor(user)).apply(file, ops);
 					changes.push({
 						changeId: change.changeId,
 						summary: change.summary,

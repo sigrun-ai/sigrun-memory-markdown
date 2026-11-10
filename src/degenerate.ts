@@ -45,7 +45,11 @@ import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import type { CurationTarget } from "@sigrun/sigrun/extension";
+import type {
+	CurationTarget,
+	DeclaredSettings,
+	SettingsDeclaration,
+} from "@sigrun/sigrun/extension";
 import {
 	AssistantEntry,
 	defineExtension,
@@ -68,11 +72,14 @@ import type {
 	RecallResult,
 } from "./backend.js";
 import {
-	DEFAULT_LIMITS,
 	MemoryFiles,
 	type MemoryFile,
 	type ReadResult,
 } from "./files.js";
+import {
+	MEMORY_MARKDOWN_SETTINGS_SCHEMA,
+	type MemoryMarkdownSettings,
+} from "./settings-schema.js";
 import { createMemoryTarget, memoryWriteTool } from "./target.js";
 
 /** The stable `long-term-memory` section until a real backend is wired (spec B). Kept exported for back-compat; the live section never renders it. */
@@ -156,18 +163,22 @@ type RecallSource = {
  * The narrowed host surface the live section needs (Task C2): a
  * structural subset of sigrun core's `SigrunHost` — the package carries
  * no core dependency, the same restatement pattern {@link RunSettledEvent}
- * uses. `stores.settings` is the deployment-scoped settings JSON (the
- * `limits` override); `stores.user(<owner>).paths.data` is the per-user
- * data directory the memory files live in; `identity.actingUser` resolves
- * a conversation's owner (undefined = ownerless — no user memory).
+ * uses. `settings.declare` is core's declared-settings handle (settings
+ * rework): the schema is checked at load, its form generated from it, and
+ * every read applies the declared defaults and repairs malformed stored
+ * values to them. `stores.user(<owner>).paths.data` is the per-user data
+ * directory the memory files live in; `identity.actingUser` resolves a
+ * conversation's owner (undefined = ownerless — no user memory).
  */
 export interface MemoryHost {
+	readonly settings: {
+		declare<S, U = Record<string, never>>(
+			declaration: SettingsDeclaration,
+		): DeclaredSettings<S, U>;
+	};
 	readonly stores: {
 		user(user: string): {
 			readonly paths: { readonly data: string };
-		};
-		readonly settings: {
-			get(): Promise<Record<string, unknown>>;
 		};
 	};
 	readonly identity: {
@@ -215,26 +226,6 @@ export function renderMemorySection(files: {
 }
 
 /**
- * Parse the deployment `limits` settings block over the defaults.
- * Gentle-parse posture (the settings convention): a malformed or
- * non-positive limit falls back to its default — the parser never throws.
- */
-function mergeLimits(
-	raw: Record<string, unknown>,
-): Readonly<Record<MemoryFile, number>> {
-	const block = raw.limits;
-	if (typeof block !== "object" || block === null) return DEFAULT_LIMITS;
-	const overrides: Partial<Record<MemoryFile, number>> = {};
-	for (const file of ["user", "memory"] as const) {
-		const value = (block as Record<string, unknown>)[file];
-		if (typeof value === "number" && Number.isFinite(value) && value > 0) {
-			overrides[file] = value;
-		}
-	}
-	return Object.freeze({ ...DEFAULT_LIMITS, ...overrides });
-}
-
-/**
  * Render the live section for one conversation: resolve the owner, read
  * that owner's two files (the wiring's per-owner `MemoryFiles` — the same
  * instance the C3 target writes through), render. No owner → the neutral
@@ -248,7 +239,7 @@ async function renderLiveSection(
 ): Promise<string> {
 	const owner = await host.identity.actingUser(conversationId);
 	if (owner === undefined) return NO_LONG_TERM_MEMORIES;
-	const files = filesFor(owner);
+	const files = await filesFor(owner);
 	return renderMemorySection({
 		user: await files.read("user"),
 		memory: await files.read("memory"),
@@ -477,12 +468,20 @@ export interface MemoryWiring {
  * `MemoryFiles` per owner — the same instance per user, so the section's
  * reads and the C3 target's writes share one serialized queue per user.
  * Exposed on the wiring for the target's `memory_write`/`undo`.
+ *
+ * ASYNC by contract (settings rework): the limits come from the declared
+ * settings handle, which a factory may only read AFTER the host re-keys to
+ * the extension's final slug — a factory-time read would resolve the
+ * package-derived provisional slug's file, not the one the settings page
+ * writes. The first use therefore resolves the settings once (memoized:
+ * the limits are a `restart` setting, so a re-read would change nothing),
+ * and every later call reuses the resolved limits.
  */
 export interface MemoryFilesFor {
 	/** One owner's files (created on first use; same instance per user). */
-	(user: string): MemoryFiles;
-	/** The limits in effect (defaults merged with the settings override). */
-	readonly limits: Readonly<Record<MemoryFile, number>>;
+	(user: string): Promise<MemoryFiles>;
+	/** The limits in effect (defaults, repaired from the settings handle). */
+	limits(): Promise<Readonly<Record<MemoryFile, number>>>;
 }
 
 /**
@@ -491,30 +490,48 @@ export interface MemoryFilesFor {
  * factories with `factory.length > 0`) lands it here — a zero-arg factory
  * with a defaulted first parameter would consume the host as a real
  * dependency, the regression core's arity gate exists for. The limits
- * override is read ONCE at construction (settings are restart-required in
- * the sigrun convention) and merged over the defaults for every
- * `MemoryFiles` the wiring creates. The backend override is for direct
- * programmatic use (the loader passes only the host).
+ * override is read ONCE at construction (a `restart` setting) through the
+ * declared handle, which applies `DEFAULT_LIMITS` and repairs a malformed
+ * stored block to them — the deleted mergeLimits' posture. The backend
+ * override is for direct programmatic use (the loader passes only the
+ * host).
  */
 export async function createMemory(
 	host: MemoryHost,
 	backend: DegenerateMemoryBackend = new DegenerateMemoryBackend(),
 ): Promise<MemoryWiring> {
-	const limits = mergeLimits(await host.stores.settings.get());
+	// Declare first: core requires the declaration during the factory call.
+	// The values are read on FIRST USE, never here — a factory-time read
+	// resolves the package-derived provisional slug, and this extension's
+	// declared name (`sigrun.memory` → `sigrun-memory`) differs from its
+	// package name, so the read would miss the file the settings page writes.
+	const settings = host.settings.declare<MemoryMarkdownSettings>({
+		schema: MEMORY_MARKDOWN_SETTINGS_SCHEMA,
+	});
+	// Memoized: the limits are a `restart` setting, so one resolution per
+	// boot is the whole contract (and every `MemoryFiles` must see the
+	// same limits — a per-call read could split a boot across two values).
+	let limitsPromise: Promise<Readonly<Record<MemoryFile, number>>> | undefined;
+	const resolveLimits = (): Promise<Readonly<Record<MemoryFile, number>>> => {
+		limitsPromise ??= settings
+			.get()
+			.then((settled) => Object.freeze(settled.limits));
+		return limitsPromise;
+	};
 	const byUser = new Map<string, MemoryFiles>();
 	const filesFor: MemoryFilesFor = Object.assign(
-		(user: string) => {
+		async (user: string) => {
 			let files = byUser.get(user);
 			if (files === undefined) {
 				files = new MemoryFiles({
 					dir: host.stores.user(user).paths.data,
-					limits,
+					limits: await resolveLimits(),
 				});
 				byUser.set(user, files);
 			}
 			return files;
 		},
-		{ limits },
+		{ limits: resolveLimits },
 	);
 
 	const extension = defineExtension({
