@@ -490,7 +490,8 @@ export interface MemoryFilesFor {
  * factories with `factory.length > 0`) lands it here — a zero-arg factory
  * with a defaulted first parameter would consume the host as a real
  * dependency, the regression core's arity gate exists for. The limits
- * override is read ONCE at construction (a `restart` setting) through the
+ * override is read once at FIRST USE and memoized for the boot (a
+ * `restart` setting) through the
  * declared handle, which applies `DEFAULT_LIMITS` and repairs a malformed
  * stored block to them — the deleted mergeLimits' posture. The backend
  * override is for direct programmatic use (the loader passes only the
@@ -521,11 +522,17 @@ export async function createMemory(
 	const byUser = new Map<string, MemoryFiles>();
 	const filesFor: MemoryFilesFor = Object.assign(
 		async (user: string) => {
+			// Resolve the limits BEFORE the map lookup: the await must not
+			// sit between get and set, or two concurrent first-use callers
+			// both observe undefined and build two MemoryFiles over one
+			// directory (per-instance write serialization lost — the
+			// one-instance-per-user invariant the interface promises).
+			const limits = await resolveLimits();
 			let files = byUser.get(user);
 			if (files === undefined) {
 				files = new MemoryFiles({
 					dir: host.stores.user(user).paths.data,
-					limits: await resolveLimits(),
+					limits,
 				});
 				byUser.set(user, files);
 			}

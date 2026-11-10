@@ -89,8 +89,8 @@ const DEV_PIN_OVERRIDES = {
 const peers = manifest.peerDependencies ?? {};
 const devDeps = manifest.devDependencies ?? {};
 check(
-	peers["@sigrun/sigrun"] === ">=0.13.0",
-	'package.json: peerDependencies["@sigrun/sigrun"] must be ">=0.13.0"',
+	peers["@sigrun/sigrun"] === HOST_MODULE_PINS["@sigrun/sigrun"],
+	`package.json: peerDependencies["@sigrun/sigrun"] must be ${HOST_MODULE_PINS["@sigrun/sigrun"]}`,
 );
 check(
 	devDeps["@sigrun/sigrun"] === "file:../sigrun",

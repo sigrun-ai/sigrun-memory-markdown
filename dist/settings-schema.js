@@ -28,7 +28,7 @@ function budget(title, description, defaultValue) {
         description,
         exclusiveMinimum: 0,
         default: defaultValue,
-        // Read once, when the wiring is constructed.
+        // Read once at first use, memoized for the boot.
         "x-sigrun-apply": "restart",
     });
 }

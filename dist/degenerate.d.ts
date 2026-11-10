@@ -222,7 +222,8 @@ export interface MemoryFilesFor {
  * factories with `factory.length > 0`) lands it here — a zero-arg factory
  * with a defaulted first parameter would consume the host as a real
  * dependency, the regression core's arity gate exists for. The limits
- * override is read ONCE at construction (a `restart` setting) through the
+ * override is read once at FIRST USE and memoized for the boot (a
+ * `restart` setting) through the
  * declared handle, which applies `DEFAULT_LIMITS` and repairs a malformed
  * stored block to them — the deleted mergeLimits' posture. The backend
  * override is for direct programmatic use (the loader passes only the
