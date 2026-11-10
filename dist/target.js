@@ -101,7 +101,7 @@ export function memoryWriteTool(host, filesFor) {
                 return error("This conversation has no owner, so there is no user memory to write.");
             }
             try {
-                const change = await filesFor(user).apply(args.file, args.ops, args.reason === undefined ? {} : { reviewId: args.reason });
+                const change = await (await filesFor(user)).apply(args.file, args.ops, args.reason === undefined ? {} : { reviewId: args.reason });
                 return {
                     output: [{ type: "text", text: change.summary }],
                     details: {
@@ -235,7 +235,7 @@ export function createMemoryTarget(filesFor) {
         tools: ["memory_write"],
         guidance: () => [...MEMORY_GUIDANCE],
         async undo(user, changeId, _ctx) {
-            await filesFor(user).undo(changeId);
+            await (await filesFor(user)).undo(changeId);
         },
         async maintain(user, _ctx, budget) {
             const changes = [];
@@ -243,7 +243,7 @@ export function createMemoryTarget(filesFor) {
             for (const file of ["user", "memory"]) {
                 if (runs < 1 || Date.now() >= budget.deadline)
                     break;
-                const read = await filesFor(user).read(file);
+                const read = await (await filesFor(user)).read(file);
                 // An empty file has nothing to merge or drop — spending a
                 // digest run on it buys nothing.
                 if (read.entries.length === 0)
@@ -258,7 +258,7 @@ export function createMemoryTarget(filesFor) {
                     continue;
                 }
                 try {
-                    const change = await filesFor(user).apply(file, ops);
+                    const change = await (await filesFor(user)).apply(file, ops);
                     changes.push({
                         changeId: change.changeId,
                         summary: change.summary,

@@ -41,7 +41,7 @@
  */
 import type { Context } from "@earendil-works/chord";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { CurationTarget } from "@sigrun/sigrun/extension";
+import type { CurationTarget, DeclaredSettings, SettingsDeclaration } from "@sigrun/sigrun/extension";
 import type { Cursor, EntryId, EntryRecord, Extension, Page, SubmissionId } from "@earendil-works/pi-durable";
 import type { MemoryBackend, ObserveRecord, RecallResult } from "./backend.js";
 import { MemoryFiles, type MemoryFile, type ReadResult } from "./files.js";
@@ -102,20 +102,22 @@ type RecallSource = {
  * The narrowed host surface the live section needs (Task C2): a
  * structural subset of sigrun core's `SigrunHost` — the package carries
  * no core dependency, the same restatement pattern {@link RunSettledEvent}
- * uses. `stores.settings` is the deployment-scoped settings JSON (the
- * `limits` override); `stores.user(<owner>).paths.data` is the per-user
- * data directory the memory files live in; `identity.actingUser` resolves
- * a conversation's owner (undefined = ownerless — no user memory).
+ * uses. `settings.declare` is core's declared-settings handle (settings
+ * rework): the schema is checked at load, its form generated from it, and
+ * every read applies the declared defaults and repairs malformed stored
+ * values to them. `stores.user(<owner>).paths.data` is the per-user data
+ * directory the memory files live in; `identity.actingUser` resolves a
+ * conversation's owner (undefined = ownerless — no user memory).
  */
 export interface MemoryHost {
+    readonly settings: {
+        declare<S, U = Record<string, never>>(declaration: SettingsDeclaration): DeclaredSettings<S, U>;
+    };
     readonly stores: {
         user(user: string): {
             readonly paths: {
                 readonly data: string;
             };
-        };
-        readonly settings: {
-            get(): Promise<Record<string, unknown>>;
         };
     };
     readonly identity: {
@@ -199,12 +201,20 @@ export interface MemoryWiring {
  * `MemoryFiles` per owner — the same instance per user, so the section's
  * reads and the C3 target's writes share one serialized queue per user.
  * Exposed on the wiring for the target's `memory_write`/`undo`.
+ *
+ * ASYNC by contract (settings rework): the limits come from the declared
+ * settings handle, which a factory may only read AFTER the host re-keys to
+ * the extension's final slug — a factory-time read would resolve the
+ * package-derived provisional slug's file, not the one the settings page
+ * writes. The first use therefore resolves the settings once (memoized:
+ * the limits are a `restart` setting, so a re-read would change nothing),
+ * and every later call reuses the resolved limits.
  */
 export interface MemoryFilesFor {
     /** One owner's files (created on first use; same instance per user). */
-    (user: string): MemoryFiles;
-    /** The limits in effect (defaults merged with the settings override). */
-    readonly limits: Readonly<Record<MemoryFile, number>>;
+    (user: string): Promise<MemoryFiles>;
+    /** The limits in effect (defaults, repaired from the settings handle). */
+    limits(): Promise<Readonly<Record<MemoryFile, number>>>;
 }
 /**
  * Build the degenerate memory wiring. THE HOST RULE: the first parameter
@@ -212,10 +222,12 @@ export interface MemoryFilesFor {
  * factories with `factory.length > 0`) lands it here — a zero-arg factory
  * with a defaulted first parameter would consume the host as a real
  * dependency, the regression core's arity gate exists for. The limits
- * override is read ONCE at construction (settings are restart-required in
- * the sigrun convention) and merged over the defaults for every
- * `MemoryFiles` the wiring creates. The backend override is for direct
- * programmatic use (the loader passes only the host).
+ * override is read once at FIRST USE and memoized for the boot (a
+ * `restart` setting) through the
+ * declared handle, which applies `DEFAULT_LIMITS` and repairs a malformed
+ * stored block to them — the deleted mergeLimits' posture. The backend
+ * override is for direct programmatic use (the loader passes only the
+ * host).
  */
 export declare function createMemory(host: MemoryHost, backend?: DegenerateMemoryBackend): Promise<MemoryWiring>;
 export {};

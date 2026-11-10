@@ -11,10 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.4] - 2026-11-07
 
-## [Unreleased]
+## [0.3.0] - 2026-11-10
 
 ### Changed
 
+- Declare the `limits` settings as JSON Schema through `host.settings.declare`, so the extension's settings page is a generated form (a `Limits` group holding the `USER` and `MEMORY` budgets). The hand-written `mergeLimits` parser is gone: core's checked read applies the defaults (`DEFAULT_LIMITS`, 1375/2200) and repairs a malformed or non-positive stored limit to them — the old gentle-parse fallback, now with a load-time warning and an admin notice instead of silence. Requires sigrun 0.13.0 or newer.
+- **Fix:** the `limits` setting now actually applies. The factory used to read it during its body, i.e. under the loader's provisional, package-derived slug (`memory-markdown`), while the settings page writes the extension's declared slug (`sigrun-memory`, from the `sigrun.memory` name) — so an edited limit never reached the files. The read moved to first use and is memoized for the boot; `MemoryFilesFor` is now async (`files(user)` and `files.limits()` return promises).
 - peer pi-durable/pi-ai/chord ~1.5.0 (requires sigrun 0.11.0).
 
 

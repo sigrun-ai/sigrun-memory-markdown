@@ -168,7 +168,7 @@ test("memory_write applies ops for the acting user and reports the change", asyn
 	expect(result.text).toBe("USER.md: add 1 (0 → 1 entries)");
 
 	// The op landed in ALICE's file — and nowhere else.
-	const read = await wiring.files("alice").read("user");
+	const read = await (await wiring.files("alice")).read("user");
 	expect(read.entries).toEqual(["prefers concise answers"]);
 	await expect(readFile(pathFor("bob", "USER.md"))).rejects.toMatchObject({
 		code: "ENOENT",
@@ -223,7 +223,7 @@ test("undo restores the file to the change's before-state", async () => {
 		file: "memory",
 		ops: [{ op: "add", text: "deploys via flux" }],
 	});
-	expect((await wiring.files("alice").read("memory")).entries).toEqual([
+	expect((await (await wiring.files("alice")).read("memory")).entries).toEqual([
 		"acme cluster runs talos",
 		"deploys via flux",
 	]);
@@ -232,7 +232,7 @@ test("undo restores the file to the change's before-state", async () => {
 		abortSignal: undefined,
 	});
 
-	expect((await wiring.files("alice").read("memory")).entries).toEqual([
+	expect((await (await wiring.files("alice")).read("memory")).entries).toEqual([
 		"acme cluster runs talos",
 	]);
 });
@@ -262,7 +262,7 @@ test("maintain rejecting a >25% loss changes nothing", async () => {
 	);
 
 	expect(report).toEqual({ changes: [], more: false });
-	expect((await wiring.files("alice").read("memory")).entries).toEqual(entries);
+	expect((await (await wiring.files("alice")).read("memory")).entries).toEqual(entries);
 	// The digest ran once (the empty USER.md is skipped) and saw the entries.
 	expect(inputs).toHaveLength(1);
 	expect(inputs[0]).toContain("acme cluster runs talos");
@@ -300,7 +300,7 @@ test("maintain within the limit applies the merged result", async () => {
 	expect(report?.changes[0]?.summary).toBe(
 		"MEMORY.md: remove 1, replace 1 (4 → 3 entries)",
 	);
-	expect((await wiring.files("alice").read("memory")).entries).toEqual([
+	expect((await (await wiring.files("alice")).read("memory")).entries).toEqual([
 		"editor is helix on all hosts",
 		"acme cluster runs talos",
 		"deploys via flux",
@@ -323,7 +323,7 @@ test("unparseable maintain text changes nothing", async () => {
 	);
 
 	expect(report).toEqual({ changes: [], more: false });
-	expect((await wiring.files("alice").read("memory")).entries).toEqual(entries);
+	expect((await (await wiring.files("alice")).read("memory")).entries).toEqual(entries);
 });
 
 test("guidance is the exact three routing lines", async () => {
@@ -357,7 +357,7 @@ test("userDeleted deletes alice's files and ring; bob's are untouched", async ()
 		EMPTY_API,
 		BACKGROUND_CONTEXT,
 	);
-	const aliceFiles = wiring.files("alice");
+	const aliceFiles = await wiring.files("alice");
 
 	await wiring.userDeleted(
 		{ user: "alice", transferTo: "bob" },
@@ -384,5 +384,5 @@ test("userDeleted deletes alice's files and ring; bob's are untouched", async ()
 	);
 	// The cached files instance is evicted: a recreated same-name user
 	// gets a fresh instance over a fresh directory (C2 review carry).
-	expect(wiring.files("alice")).not.toBe(aliceFiles);
+	expect(await wiring.files("alice")).not.toBe(aliceFiles);
 });

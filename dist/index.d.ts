@@ -15,3 +15,5 @@ export { createMemory, createMemory as default, DegenerateMemoryBackend, MEMORY_
 export type { MemoryEventApi, MemoryFilesFor, MemoryHost, MemoryWiring, RunSettledEvent, UserDeletedPayload, } from "./degenerate.js";
 export { createMemoryTarget, MEMORY_GUIDANCE, memoryWriteTool, } from "./target.js";
 export type { MemoryBackend, MemoryRole, ObserveRecord, RecallResult, } from "./backend.js";
+export { MEMORY_MARKDOWN_SETTINGS_SCHEMA } from "./settings-schema.js";
+export type { MemoryMarkdownSettings } from "./settings-schema.js";

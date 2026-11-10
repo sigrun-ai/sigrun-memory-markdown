@@ -2,7 +2,7 @@
 
 Long-term memory for [sigrun](https://github.com/sigrun-ai/sigrun) (pi-durable). Each user gets two markdown files — `USER.md` for who they are, `MEMORY.md` for their environment and projects — rendered live into the `long-term-memory` prompt section and written exclusively by the sigrun curator through this package's `memory` curation target.
 
-The factory takes the host as its first declared parameter (the sigrun loader's arity rule) and returns `{ backend, extension, files, curationTargets, runSettled, userDeleted }`. The extension installs the `memory_recall` tool and the live section; `curationTargets` carries the `memory` target; the host's memory seam delivers settled runs to `runSettled`.
+The factory takes the host as its first declared parameter (the sigrun loader's arity rule) and returns `{ backend, extension, files, curationTargets, runSettled, userDeleted }`. The extension installs the `memory_recall` tool and the live section; `curationTargets` carries the `memory` target; the host's memory seam delivers settled runs to `runSettled`. `files` is async — `files(user)` and `files.limits()` both return promises — because the limits resolve from the declared settings on first use, never inside the factory (a factory-time read resolves the loader's provisional, package-derived slug, which is not the file the settings page writes).
 
 ## What it stores
 
@@ -15,13 +15,13 @@ prefers short answers with links to sources
 works in CET; schedule deep-dive calls after 14:00
 ```
 
-Each file has a hard character budget — by default **1375 chars for `USER.md`, 2200 for `MEMORY.md`** — enforced on every write's *result*: a batch that removes or shortens enough to fit lands in one atomic step, never as a rejected intermediate state. The deployment `limits` settings block overrides the budgets per file:
+Each file has a hard character budget — by default **1375 chars for `USER.md`, 2200 for `MEMORY.md`** — enforced on every write's *result*: a batch that removes or shortens enough to fit lands in one atomic step, never as a rejected intermediate state. The extension declares the budgets as settings (`limits.user`, `limits.memory`), so the settings page draws a **Limits** group with one number field per file; the same values still work as a raw settings object:
 
 ```json
 { "limits": { "user": 2000, "memory": 3000 } }
 ```
 
-Limits are read once at startup (settings are restart-required in the sigrun convention); a malformed or non-positive override falls back to its default.
+Limits are read once, on first use (the fields are restart-apply) and memoized for the boot; a malformed or non-positive value falls back to its default, with a warning and an admin notice naming the repaired path.
 
 Every accepted change saves the previous bytes as a version (newest ten kept per file), so any change can be undone — including through malformed bytes — and an undo is itself undoable.
 

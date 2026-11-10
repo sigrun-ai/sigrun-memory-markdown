@@ -13,3 +13,4 @@
  */
 export { createMemory, createMemory as default, DegenerateMemoryBackend, MEMORY_PLACEHOLDER, renderMemorySection, } from "./degenerate.js";
 export { createMemoryTarget, MEMORY_GUIDANCE, memoryWriteTool, } from "./target.js";
+export { MEMORY_MARKDOWN_SETTINGS_SCHEMA } from "./settings-schema.js";

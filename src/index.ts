@@ -38,3 +38,5 @@ export type {
 	ObserveRecord,
 	RecallResult,
 } from "./backend.js";
+export { MEMORY_MARKDOWN_SETTINGS_SCHEMA } from "./settings-schema.js";
+export type { MemoryMarkdownSettings } from "./settings-schema.js";

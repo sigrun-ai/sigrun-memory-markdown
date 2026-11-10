@@ -140,7 +140,7 @@ test("bob's conversation never shows alice's memory", async () => {
 	expect(alices).toContain("alice-only memory marker");
 });
 
-test("deployment limits reach the usage header (read once at construction)", async () => {
+test("deployment limits reach the usage header (read once, at first use)", async () => {
 	host.setActingUser(3, "alice");
 	await host.stores.settings.set({ limits: { user: 100, memory: 40 } });
 	const userContent = "x".repeat(50);
@@ -149,7 +149,10 @@ test("deployment limits reach the usage header (read once at construction)", asy
 	await writeMemory("alice", "MEMORY.md", memoryContent);
 
 	const wiring = await createMemory(host);
-	// Settings are restart-required: a later edit must not reach the section.
+	// The limits are a restart setting, resolved at FIRST USE (the factory
+	// cannot read them: it still runs under the loader's provisional slug),
+	// then memoized — a later edit must not reach the section.
+	expect((await renderSection(wiring, 3)).includes("/100 chars")).toBe(true);
 	await host.stores.settings.set({ limits: { user: 999, memory: 999 } });
 
 	expect(await renderSection(wiring, 3)).toBe(
