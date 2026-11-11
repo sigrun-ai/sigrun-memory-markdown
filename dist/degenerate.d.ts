@@ -177,6 +177,9 @@ export declare class DegenerateMemoryBackend implements MemoryBackend {
 export declare function recallFromEntries(source: RecallSource, query: string, context: Context): Promise<RecallResult[]>;
 /** What `createMemory` wires together for a host. */
 export interface MemoryWiring {
+    /** Display title (core 0.15.0's `SigrunExtensionResult.title`): trimmed
+     * to 1..60 characters by the loader; never changes the slug. */
+    readonly title: "Memory (Markdown)";
     /** The backend the extension observes into and the tool recalls from. */
     readonly backend: DegenerateMemoryBackend;
     /** Install into the harness registry (tools/section). */

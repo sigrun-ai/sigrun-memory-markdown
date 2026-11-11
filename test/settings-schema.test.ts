@@ -31,6 +31,12 @@ describe("memory-markdown settings schema", () => {
 		assertDrawable(MEMORY_MARKDOWN_SETTINGS_SCHEMA);
 	});
 
+	test("factory declares its title", async () => {
+		await withHost(async (host) => {
+			expect((await createMemory(host)).title).toBe("Memory (Markdown)");
+		});
+	});
+
 	test("defaults match the old parser", async () => {
 		// The old mergeLimits: an absent block is DEFAULT_LIMITS — 1375 chars
 		// for USER.md, 2200 for MEMORY.md.
