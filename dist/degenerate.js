@@ -326,6 +326,7 @@ export async function createMemory(host, backend = new DegenerateMemoryBackend()
     });
     const curationTargets = [createMemoryTarget(filesFor)];
     return {
+        title: "Memory (Markdown)",
         backend,
         extension,
         files: filesFor,
