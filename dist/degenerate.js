@@ -41,7 +41,7 @@
  */
 import { rm } from "node:fs/promises";
 import { Type } from "typebox";
-import { isUserInput, typedText } from "@sigrun/shared/turns";
+import { EXPANDED_USER_KIND, isUserInput, typedText, USER_KIND, } from "@sigrun/shared/turns";
 import { AssistantEntry, defineExtension, defineTool, section, } from "@earendil-works/pi-durable";
 import { MemoryFiles, } from "./files.js";
 import { MEMORY_MARKDOWN_SETTINGS_SCHEMA, } from "./settings-schema.js";
@@ -215,7 +215,7 @@ export async function recallFromEntries(source, query, context) {
                     ? "assistant"
                     : undefined;
             if (role !== undefined && entry.id !== undefined) {
-                const text = isUserInput(entry) && (entry.kind === "sigrun.user" || entry.kind === "sigrun.user.expanded")
+                const text = entry.kind === USER_KIND || entry.kind === EXPANDED_USER_KIND
                     ? typedText(entry)
                     : entryText(entry);
                 if (text.toLowerCase().includes(needle)) {

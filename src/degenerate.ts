@@ -45,7 +45,12 @@ import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { isUserInput, typedText } from "@sigrun/shared/turns";
+import {
+	EXPANDED_USER_KIND,
+	isUserInput,
+	typedText,
+	USER_KIND,
+} from "@sigrun/shared/turns";
 import type {
 	CurationTarget,
 	DeclaredSettings,
@@ -376,7 +381,7 @@ export async function recallFromEntries(
 					: undefined;
 			if (role !== undefined && entry.id !== undefined) {
 				const text =
-					isUserInput(entry) && (entry.kind === "sigrun.user" || entry.kind === "sigrun.user.expanded")
+					entry.kind === USER_KIND || entry.kind === EXPANDED_USER_KIND
 						? typedText(entry)
 						: entryText(entry);
 				if (text.toLowerCase().includes(needle)) {
