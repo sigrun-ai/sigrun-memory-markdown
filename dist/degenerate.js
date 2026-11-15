@@ -41,7 +41,8 @@
  */
 import { rm } from "node:fs/promises";
 import { Type } from "typebox";
-import { AssistantEntry, defineExtension, defineTool, section, UserEntry, } from "@earendil-works/pi-durable";
+import { isUserInput, typedText } from "@sigrun/shared/turns";
+import { AssistantEntry, defineExtension, defineTool, section, } from "@earendil-works/pi-durable";
 import { MemoryFiles, } from "./files.js";
 import { MEMORY_MARKDOWN_SETTINGS_SCHEMA, } from "./settings-schema.js";
 import { createMemoryTarget, memoryWriteTool } from "./target.js";
@@ -208,13 +209,15 @@ export async function recallFromEntries(source, query, context) {
         const page = await source.entries({}, RECALL_PAGE_SIZE, cursor, context);
         for (const entry of page.items) {
             scanned++;
-            const role = UserEntry.is(entry)
+            const role = isUserInput(entry)
                 ? "user"
                 : AssistantEntry.is(entry)
                     ? "assistant"
                     : undefined;
             if (role !== undefined && entry.id !== undefined) {
-                const text = entryText(entry);
+                const text = isUserInput(entry) && (entry.kind === "sigrun.user" || entry.kind === "sigrun.user.expanded")
+                    ? typedText(entry)
+                    : entryText(entry);
                 if (text.toLowerCase().includes(needle)) {
                     hits.push({
                         conversationId: entry.conversationId,

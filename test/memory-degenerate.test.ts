@@ -34,6 +34,7 @@ import {
 	type Conversation,
 	type ConversationId,
 	type EntryId,
+	type EntryRecord,
 	type HarnessSettings,
 	type ModelRef,
 	type Registry,
@@ -345,7 +346,7 @@ test("recall reaches an entry the live window compacted away", async () => {
 		// one's does not, and `keepRecentTokens: 1` cuts everything before the
 		// newest user message. `backgroundTokens: 0` keeps compaction blocking-
 		// only so the faux response queue stays deterministic.
-		const { opened, memory, faux } = await openMemoryHarness(dir, {
+		const { opened, faux } = await openMemoryHarness(dir, {
 			reserveTokens: 127_600,
 			keepRecentTokens: 1,
 			backgroundTokens: 0,
@@ -523,6 +524,90 @@ test("recall in conversation A finds A's text only, even after B settled last", 
 			const inB = await callRecallTool(opened, conversationB.id, "marker beta");
 			expect(inB.text).toContain("bob-only marker beta");
 			expect(inB.text).not.toContain("alice-only marker alpha");
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("recall in a sigrun.user entry matches the typed text, not the inline attachment", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-memory-"));
+	try {
+		const { opened, memory, faux } = await openMemoryHarness(dir);
+		try {
+			const conversation = await openConversation(opened);
+			faux.setResponses([fauxAssistantMessage("answer for attachments")]);
+			const submission = await conversation.submit(
+				{ type: "input", content: "typed recall needle alpha" },
+				BACKGROUND_CONTEXT,
+			);
+			await submission.wait(BACKGROUND_CONTEXT);
+
+			// The host delivers the attachment-bearing conversation's transcript
+			// as its recall source; its sigrun.user entry separates typed prose
+			// from the attachment's inline model parts via data.attachments.parts.
+			const attachmentApi: MemoryEventApi = {
+				entry: async () => undefined,
+				entries: async () => ({
+					items: [
+						{
+							id: 7,
+							conversationId: conversation.id,
+							kind: "sigrun.user",
+							data: {
+								attachments: [
+									{
+										path: "/fixtures/recall/notes.txt",
+										name: "notes.txt",
+										mime: "text/plain",
+										bytes: 42,
+										delivery: "inline",
+										parts: [1],
+									},
+								],
+							},
+							model: [
+								{
+									role: "user",
+									content: [
+										{ type: "text", text: "typed recall needle alpha" },
+										{ type: "text", text: "inline attachment needle beta" },
+									],
+								},
+							],
+						},
+					] as unknown as EntryRecord[],
+				}),
+				document: async () => undefined,
+			};
+			await memory.runSettled(
+				fakeEvent({
+					conversationId: conversation.id,
+					inputTexts: ["typed recall needle alpha"],
+					status: "answered",
+					answer: "answer for attachments",
+				}),
+				attachmentApi,
+				BACKGROUND_CONTEXT,
+			);
+
+			// The input kind is recognised and searched as what the user typed.
+			expect(
+				await memory.backend.recall(
+					"typed recall needle alpha",
+					conversation.id,
+					BACKGROUND_CONTEXT,
+				),
+			).toMatchObject([{ role: "user", entryId: 7 }]);
+			expect(
+				await memory.backend.recall(
+					"inline attachment needle beta",
+					conversation.id,
+					BACKGROUND_CONTEXT,
+				),
+			).toEqual([]);
 		} finally {
 			await opened.harness.close(BACKGROUND_CONTEXT);
 		}

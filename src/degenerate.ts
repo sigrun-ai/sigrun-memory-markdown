@@ -45,6 +45,7 @@ import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
+import { isUserInput, typedText } from "@sigrun/shared/turns";
 import type {
 	CurationTarget,
 	DeclaredSettings,
@@ -55,7 +56,6 @@ import {
 	defineExtension,
 	defineTool,
 	section,
-	UserEntry,
 } from "@earendil-works/pi-durable";
 import type {
 	Cursor,
@@ -369,13 +369,16 @@ export async function recallFromEntries(
 		);
 		for (const entry of page.items) {
 			scanned++;
-			const role: MemoryRole | undefined = UserEntry.is(entry)
+			const role: MemoryRole | undefined = isUserInput(entry)
 				? "user"
 				: AssistantEntry.is(entry)
 					? "assistant"
 					: undefined;
 			if (role !== undefined && entry.id !== undefined) {
-				const text = entryText(entry);
+				const text =
+					isUserInput(entry) && (entry.kind === "sigrun.user" || entry.kind === "sigrun.user.expanded")
+						? typedText(entry)
+						: entryText(entry);
 				if (text.toLowerCase().includes(needle)) {
 					hits.push({
 						conversationId: entry.conversationId,
