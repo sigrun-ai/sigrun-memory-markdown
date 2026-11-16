@@ -140,6 +140,9 @@ export async function createFakeHost(
 				return {
 					get: async () =>
 						checkStoredSettings(declaration.schema, await readSettings()).value as S,
+					// No userSchema: effective == get in this fake host.
+					effective: async () =>
+						checkStoredSettings(declaration.schema, await readSettings()).value as S,
 					user: () => {
 						throw new Error("the fake host declares no per-user settings schema");
 					},
