@@ -72,7 +72,8 @@ check(typeof manifest.homepage === "string", "package.json: homepage absent");
  * the schema against (settings rework); development uses core's workspace
  * through a file: dev link. */
 const HOST_MODULE_PINS = {
-	"@sigrun/sigrun": ">=0.15.0",
+	"@sigrun/sigrun": ">=0.20.0",
+	"@sigrun/shared": "0.20.0",
 	"@earendil-works/pi-durable": "~1.5.0",
 	"@earendil-works/pi-ai": "~1.5.0",
 	"@earendil-works/chord": "~1.5.0",
@@ -96,8 +97,16 @@ check(
 	devDeps["@sigrun/sigrun"] === "file:../sigrun",
 	'package.json: devDependencies["@sigrun/sigrun"] must be "file:../sigrun"',
 );
+check(
+	peers["@sigrun/shared"] === HOST_MODULE_PINS["@sigrun/shared"],
+	`package.json: peerDependencies["@sigrun/shared"] must be ${HOST_MODULE_PINS["@sigrun/shared"]}`,
+);
+check(
+	devDeps["@sigrun/shared"] === "file:../sigrun/shared",
+	'package.json: devDependencies["@sigrun/shared"] must be "file:../sigrun/shared"',
+);
 for (const [module, spec] of Object.entries(peers)) {
-	if (module === "@sigrun/sigrun") continue;
+	if (module === "@sigrun/sigrun" || module === "@sigrun/shared") continue;
 	check(
 		module in HOST_MODULE_PINS,
 		`package.json: peerDependencies carries non-host module "${module}"`,
