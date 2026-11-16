@@ -73,7 +73,7 @@ check(typeof manifest.homepage === "string", "package.json: homepage absent");
  * through a file: dev link. */
 const HOST_MODULE_PINS = {
 	"@sigrun/sigrun": ">=0.20.0",
-	"@sigrun/shared": "0.20.1",
+	"@sigrun/shared": "0.20.2",
 	"@earendil-works/pi-durable": "~1.5.0",
 	"@earendil-works/pi-ai": "~1.5.0",
 	"@earendil-works/chord": "~1.5.0",
