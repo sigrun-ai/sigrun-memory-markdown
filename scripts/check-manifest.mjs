@@ -70,10 +70,13 @@ check(typeof manifest.homepage === "string", "package.json: homepage absent");
  * @sigrun/sigrun rides as a peer for the declared-settings types and the
  * `@sigrun/sigrun/settings-schema` authoring surface the test suite proves
  * the schema against (settings rework); development uses core's workspace
- * through a file: dev link. */
+ * through a file: dev link.
+ * @sigrun/shared is an open floor (C5): 0.20.0 is the first published line
+ * carrying the `turns` helpers this extension imports (`typedText`,
+ * `USER_KIND`, `EXPANDED_USER_KIND`, `BLOCKS_*_KIND`). */
 const HOST_MODULE_PINS = {
 	"@sigrun/sigrun": ">=0.20.0",
-	"@sigrun/shared": "0.20.2",
+	"@sigrun/shared": ">=0.20.0",
 	"@earendil-works/pi-durable": "~1.5.0",
 	"@earendil-works/pi-ai": "~1.5.0",
 	"@earendil-works/chord": "~1.5.0",

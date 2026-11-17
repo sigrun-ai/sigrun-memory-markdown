@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+- The @sigrun/shared peer becomes an open floor (`>=0.20.0`) instead of the
+  exact `0.20.2` pin (decisions C5); 0.20.0 is the first published line
+  carrying the `turns` helpers this extension imports (`typedText`,
+  `USER_KIND`, `EXPANDED_USER_KIND`, `BLOCKS_*_KIND`). `check-manifest`
+  enforces the same floor. No runtime change.
+
 ## [0.4.3] - 2026-11-15
 
 - The @sigrun/shared peer moves to 0.20.2 (companion to sigrun-core
