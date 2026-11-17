@@ -73,7 +73,7 @@ check(typeof manifest.homepage === "string", "package.json: homepage absent");
  * through a file: dev link.
  * @sigrun/shared is an open floor (C5): 0.20.0 is the first published line
  * carrying the `turns` helpers this extension imports (`typedText`,
- * `USER_KIND`, `EXPANDED_USER_KIND`, `BLOCKS_*_KIND`). */
+ * `USER_KIND`, `EXPANDED_USER_KIND`, `isUserInput`). */
 const HOST_MODULE_PINS = {
 	"@sigrun/sigrun": ">=0.20.0",
 	"@sigrun/shared": ">=0.20.0",

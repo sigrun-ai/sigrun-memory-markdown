@@ -5,12 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.4] - 2026-11-17
 
 - The @sigrun/shared peer becomes an open floor (`>=0.20.0`) instead of the
   exact `0.20.2` pin (decisions C5); 0.20.0 is the first published line
   carrying the `turns` helpers this extension imports (`typedText`,
-  `USER_KIND`, `EXPANDED_USER_KIND`, `BLOCKS_*_KIND`). `check-manifest`
+  `USER_KIND`, `EXPANDED_USER_KIND`, `isUserInput`). `check-manifest`
   enforces the same floor. No runtime change.
 
 ## [0.4.3] - 2026-11-15
@@ -47,11 +47,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   list and settings page show it).
 - The @sigrun/shared peer gains the 0.16.0 line (companion to core 0.16.0).
 
-## [Unreleased]
-
-### Changed
-
-- Display title `Memory (Markdown)` on the factory result (core 0.15.0). Peer floor `@sigrun/sigrun >=0.15.0`.
 
 ## [0.2.5] - 2026-11-08
 
