@@ -7,7 +7,7 @@
  * replaces it without touching the harness wiring.
  */
 
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { EntryId } from "@earendil-works/pi-durable";
 
 /** Which side of one generation turn the record captures. */

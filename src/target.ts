@@ -24,7 +24,7 @@
  * it never guts.
  */
 
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { Type } from "typebox";
 import { defineTool } from "@earendil-works/pi-durable";
 import type {
